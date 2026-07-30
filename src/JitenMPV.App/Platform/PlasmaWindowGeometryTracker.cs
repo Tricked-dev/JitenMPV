@@ -4,10 +4,9 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
-using JitenMPV.App.Platform.WaylandProtocol;
 using JitenMPV.Core.Interaction;
 using NWayland;
-using NWayland.Interop;
+using NWayland.Protocols.Plasma.PlasmaWindowManagement;
 using NWayland.Protocols.Wayland;
 
 namespace JitenMPV.App.Platform;
@@ -102,8 +101,11 @@ internal sealed class PlasmaWindowGeometryTracker
                 throw new InvalidOperationException(
                     "KWin did not advertise Plasma window management v13 or newer.");
 
-            var managementListener = new ManagementListener(this);
-            _ = registry.Bind<PlasmaWindowManagementProxy>(
+            var managementListener = new OrgKdePlasmaWindowManagement.Listener.Relay
+            {
+                OnWindowWithUuid = (management, _, uuid) => AddWindow(management, uuid)
+            };
+            _ = registry.Bind<OrgKdePlasmaWindowManagement>(
                 managementName, Math.Min(managementVersion, 19u),
                 managementListener, display);
 
@@ -124,13 +126,41 @@ internal sealed class PlasmaWindowGeometryTracker
         }
     }
 
-    private void AddWindow(PlasmaWindowManagementProxy management, string uuid)
+    private void AddWindow(OrgKdePlasmaWindowManagement management, string uuid)
     {
-        var tracked = new TrackedWindow(uuid);
-        var proxy = management.GetWindowByUuid(uuid, new WindowListener(this, tracked));
+        var tracked = new TrackedWindow();
+        var listener = new OrgKdePlasmaWindow.Listener.Relay
+        {
+            OnUnmapped = _ => RemoveWindow(tracked),
+            OnGeometry = (_, x, y, width, height) =>
+                UpdateGeometry(tracked, clientArea: false, x, y, width, height),
+            OnPidChanged = (_, processId) =>
+            {
+                lock (_gate)
+                    tracked.ProcessId = processId;
+            },
+            OnClientGeometry = (_, x, y, width, height) =>
+                UpdateGeometry(tracked, clientArea: true, x, y, width, height)
+        };
+        var proxy = management.GetWindowByUuid(uuid, listener);
         tracked.Proxy = proxy;
         lock (_gate)
             _windows[proxy.Id] = tracked;
+    }
+
+    private void UpdateGeometry(
+        TrackedWindow window, bool clientArea,
+        int x, int y, uint width, uint height)
+    {
+        var geometry = new PixelRect(
+            x, y, checked((int)width), checked((int)height));
+        lock (_gate)
+        {
+            if (clientArea)
+                window.ClientGeometry = geometry;
+            else
+                window.FrameGeometry = geometry;
+        }
     }
 
     private void RemoveWindow(TrackedWindow window)
@@ -167,56 +197,9 @@ internal sealed class PlasmaWindowGeometryTracker
             globalAdded(name, interfaceName, version);
     }
 
-    private sealed class ManagementListener(
-        PlasmaWindowGeometryTracker owner) : IWlEventsListener
+    private sealed class TrackedWindow
     {
-        public void DispatchEvent(WlEventArgs arguments)
-        {
-            if (arguments.Opcode != 4
-                || arguments.Sender is not PlasmaWindowManagementProxy management)
-                return;
-
-            if (arguments.GetString(1) is { Length: > 0 } uuid)
-                owner.AddWindow(management, uuid);
-        }
-    }
-
-    private sealed class WindowListener(
-        PlasmaWindowGeometryTracker owner,
-        TrackedWindow window) : IWlEventsListener
-    {
-        public void DispatchEvent(WlEventArgs arguments)
-        {
-            lock (owner._gate)
-            {
-                switch (arguments.Opcode)
-                {
-                    case 5:
-                        owner.RemoveWindow(window);
-                        break;
-                    case 8:
-                        window.FrameGeometry = ReadGeometry(arguments);
-                        break;
-                    case 10:
-                        window.ProcessId = arguments.GetUInt32(0);
-                        break;
-                    case 17:
-                        window.ClientGeometry = ReadGeometry(arguments);
-                        break;
-                }
-            }
-        }
-
-        private static PixelRect ReadGeometry(WlEventArgs arguments) =>
-            new(arguments.GetInt32(0), arguments.GetInt32(1),
-                checked((int)arguments.GetUInt32(2)),
-                checked((int)arguments.GetUInt32(3)));
-    }
-
-    private sealed class TrackedWindow(string uuid)
-    {
-        public string Uuid { get; } = uuid;
-        public PlasmaWindowProxy? Proxy { get; set; }
+        public OrgKdePlasmaWindow? Proxy { get; set; }
         public uint ProcessId { get; set; }
         public PixelRect? FrameGeometry { get; set; }
         public PixelRect? ClientGeometry { get; set; }

@@ -6,7 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
-using JitenMPV.App.Platform.WaylandProtocol;
+using NWayland.Protocols.Plasma.PlasmaShell;
 using NWayland.Protocols.Wayland;
 
 namespace JitenMPV.App.Platform;
@@ -96,16 +96,16 @@ internal sealed class PlasmaWaylandPopupBridge
                               && method.IsGenericMethodDefinition
                               && method.GetParameters().Length == 3);
 
-        var shell = (PlasmaShellProxy?)bindMethod
-            .MakeGenericMethod(typeof(PlasmaShellProxy))
+        var shell = (OrgKdePlasmaShell?)bindMethod
+            .MakeGenericMethod(typeof(OrgKdePlasmaShell))
             .Invoke(globals, [1u, 8u, null]);
         return new ConnectionState(shell);
     }
 
-    private static SurfaceState CreateSurface(PlasmaShellProxy shell, WlSurface wlSurface)
+    private static SurfaceState CreateSurface(OrgKdePlasmaShell shell, WlSurface wlSurface)
     {
         var surface = shell.GetSurface(wlSurface);
-        surface.SetRole((uint)PlasmaSurfaceProxy.Role.OnScreenDisplay);
+        surface.SetRole((uint)OrgKdePlasmaSurface.RoleEnum.Onscreendisplay);
         if (surface.IsSetSkipTaskbarAvailable)
             surface.SetSkipTaskbar(1);
         if (surface.IsSetSkipSwitcherAvailable)
@@ -218,8 +218,8 @@ internal sealed class PlasmaWaylandPopupBridge
             exception.GetBaseException().Message);
     }
 
-    private sealed record ConnectionState(PlasmaShellProxy? Shell);
-    private sealed record SurfaceState(PlasmaSurfaceProxy Surface);
+    private sealed record ConnectionState(OrgKdePlasmaShell? Shell);
+    private sealed record SurfaceState(OrgKdePlasmaSurface Surface);
     private readonly record struct WorkerContext(
         object SurfaceProxy,
         Func<Action, Task> InvokeAsync);

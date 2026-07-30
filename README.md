@@ -21,29 +21,20 @@ Subtitles are parsed as they play, each word coloured by its state in your Jiten
 - [mpv](https://mpv.io/)
 - A [Jiten](https://jiten.moe) account and API key
 - ffmpeg, for audio and clip mining. JitenMPV can download it for you.
-- Windows, Linux or macOS. Plasma Wayland and X11/XWayland are supported on Linux.
+- Windows, Linux or macOS. Linux supports Plasma Wayland and X11/XWayland.
 
-On Plasma Wayland, both JitenMPV and mpv use native Wayland automatically; no permission prompt or
-mpv override is needed. The Linux installer registers the read-only KWin Wayland interface used for
-popup placement. If you need to force JitenMPV back to XWayland for troubleshooting, start mpv with
-`JITEN_MPV_WINDOWING=x11`.
+On Plasma, JitenMPV and mpv use native Wayland automatically with accurate popup placement,
+including windowed, fullscreen and multi-monitor setups. No permission prompt or mpv configuration
+is required.
 
-In fullscreen, JitenMPV combines mpv's output name and pointer coordinates for exact placement,
-including multi-monitor layouts. In windowed mode, it matches mpv by PID through KWin's
-window-management protocol and follows the live client-area geometry when the window moves or
-resizes.
-
-Other Wayland compositors do not expose Plasma's popup placement protocol yet. For those desktops,
-JitenMPV still uses native Wayland and falls back to a deterministic near-subtitle anchor. To opt
-into cursor-relative X11 compatibility instead, add this to `~/.config/mpv/mpv.conf` and restart
-mpv:
+Other Wayland compositors use native Wayland with approximate placement. For cursor-relative X11
+compatibility, add this to `~/.config/mpv/mpv.conf`:
 
 ```ini
 gpu-context=x11vk,x11egl
 ```
 
-JitenMPV detects the resulting mpv `window-id` and follows mpv onto X11/XWayland automatically.
-`JITEN_MPV_WINDOWING=x11` or `wayland` remains available as an explicit troubleshooting override.
+Use `JITEN_MPV_WINDOWING=x11` or `wayland` to override automatic detection.
 
 ## Installation
 

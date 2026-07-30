@@ -53,6 +53,26 @@ sha256_of() {
     fi
 }
 
+is_wayland_session() {
+    [ "${JITEN_MPV_WINDOWING:-}" != "x11" ] &&
+        { [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }
+}
+
+is_plasma_session() {
+    case ":${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}:" in
+        *KDE* | *kde* | *Plasma* | *plasma*) return 0 ;;
+    esac
+
+    [ "${KDE_FULL_SESSION:-}" = "true" ] || [ -n "${KDE_SESSION_VERSION:-}" ]
+}
+
+has_libx11() {
+    { ldconfig -p 2>/dev/null | grep -q 'libX11\.so\.6'; } ||
+        [ -e /usr/lib/libX11.so.6 ] ||
+        [ -e /usr/lib64/libX11.so.6 ] ||
+        [ -e /usr/lib/x86_64-linux-gnu/libX11.so.6 ]
+}
+
 require curl
 require tar
 command -v sha256sum >/dev/null 2>&1 || require shasum
@@ -99,14 +119,14 @@ else
     "$TEMP/JitenMPV.App" install
 fi
 
-# The dictionary popup positions itself through X11; without libX11 it still opens, anchored to the
-# subtitle instead of the cursor. Worth saying once here rather than fielding it as a bug.
 if [ "$(uname -s)" = "Linux" ]; then
-    if ! { ldconfig -p 2>/dev/null | grep -q 'libX11\.so\.6'; } &&
-       [ ! -e /usr/lib/libX11.so.6 ] && [ ! -e /usr/lib64/libX11.so.6 ] &&
-       [ ! -e /usr/lib/x86_64-linux-gnu/libX11.so.6 ]; then
+    if is_wayland_session && is_plasma_session; then
+        echo "Wayland: KDE Plasma detected; native popup placement is ready."
+    elif is_wayland_session; then
+        echo "Wayland: native mode enabled; exact popup placement currently requires Plasma."
+        echo "For cursor-relative placement, use mpv's X11/XWayland backend."
+    elif ! has_libx11; then
         echo
-        echo "note: libX11 was not found. Subtitle coloring works, but the dictionary popup cannot"
-        echo "      follow the cursor. Install libx11 for full positioning."
+        echo "note: libX11 was not found; install it for cursor-relative popup placement on X11."
     fi
 fi

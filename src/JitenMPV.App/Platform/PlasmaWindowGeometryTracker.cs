@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
@@ -44,23 +45,34 @@ internal sealed class PlasmaWindowGeometryTracker
 
         lock (_gate)
         {
-            foreach (var window in _windows.Values)
+            var window = _windows.Values.FirstOrDefault(
+                candidate => candidate.ProcessId == (uint)processId
+                    && Geometry(candidate) is not null);
+
+            // mpv can report a PID from inside a container namespace while KWin reports the host
+            // PID. If there is only one native mpv toplevel, its app ID identifies it unambiguously.
+            var mpvWindows = _windows.Values
+                .Where(candidate =>
+                    string.Equals(candidate.AppId, "mpv", StringComparison.OrdinalIgnoreCase)
+                    && Geometry(candidate) is not null)
+                .Take(2)
+                .ToArray();
+            window ??= mpvWindows.Length == 1 ? mpvWindows[0] : null;
+
+            if (window is not null)
             {
-                if (window.ProcessId != (uint)processId)
-                    continue;
-
-                var geometry = window.ClientGeometry ?? window.FrameGeometry;
-                if (geometry is null)
-                    continue;
-
+                var geometry = Geometry(window)!.Value;
                 return new PixelPoint(
-                    geometry.Value.X + (int)Math.Round(pointer.X),
-                    geometry.Value.Y + (int)Math.Round(pointer.Y));
+                    geometry.X + (int)Math.Round(pointer.X),
+                    geometry.Y + (int)Math.Round(pointer.Y));
             }
         }
 
         return null;
     }
+
+    private static PixelRect? Geometry(TrackedWindow window) =>
+        window.ClientGeometry ?? window.FrameGeometry;
 
     private void EnsureStarted()
     {
@@ -132,6 +144,11 @@ internal sealed class PlasmaWindowGeometryTracker
         var listener = new OrgKdePlasmaWindow.Listener.Relay
         {
             OnUnmapped = _ => RemoveWindow(tracked),
+            OnAppIdChanged = (_, appId) =>
+            {
+                lock (_gate)
+                    tracked.AppId = appId;
+            },
             OnGeometry = (_, x, y, width, height) =>
                 UpdateGeometry(tracked, clientArea: false, x, y, width, height),
             OnPidChanged = (_, processId) =>
@@ -200,6 +217,7 @@ internal sealed class PlasmaWindowGeometryTracker
     private sealed class TrackedWindow
     {
         public OrgKdePlasmaWindow? Proxy { get; set; }
+        public string? AppId { get; set; }
         public uint ProcessId { get; set; }
         public PixelRect? FrameGeometry { get; set; }
         public PixelRect? ClientGeometry { get; set; }

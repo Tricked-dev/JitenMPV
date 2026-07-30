@@ -27,8 +27,8 @@ On Plasma, JitenMPV and mpv use native Wayland automatically with accurate popup
 including windowed, fullscreen and multi-monitor setups. No permission prompt or mpv configuration
 is required.
 
-Other Wayland compositors use native Wayland with approximate placement. For cursor-relative X11
-compatibility, add this to `~/.config/mpv/mpv.conf`:
+Other Wayland compositors use native Wayland with approximate placement. To make the dictionary
+popup follow the cursor through X11/XWayland, add this to `~/.config/mpv/mpv.conf`:
 
 ```ini
 gpu-context=x11vk,x11egl

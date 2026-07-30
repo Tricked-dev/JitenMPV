@@ -121,12 +121,12 @@ fi
 
 if [ "$(uname -s)" = "Linux" ]; then
     if is_wayland_session && is_plasma_session; then
-        echo "Wayland: KDE Plasma detected; native popup placement is ready."
+        echo "Wayland: KDE Plasma detected; the dictionary popup can follow the cursor natively."
     elif is_wayland_session; then
-        echo "Wayland: native mode enabled; exact popup placement currently requires Plasma."
-        echo "For cursor-relative placement, use mpv's X11/XWayland backend."
+        echo "Wayland: native mode enabled; outside Plasma, popup placement is approximate."
+        echo "To make the dictionary popup follow the cursor, use mpv through X11/XWayland."
     elif ! has_libx11; then
         echo
-        echo "note: libX11 was not found; install it for cursor-relative popup placement on X11."
+        echo "note: libX11 was not found; install it so the dictionary popup can follow the cursor."
     fi
 fi

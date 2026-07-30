@@ -776,7 +776,7 @@ public sealed class PluginHost(
         await ipc.ShowTextAsync(
             "jiten-mpv: native Wayland is active. This compositor does not expose precise popup "
             + "placement, so JitenMPV uses a near-subtitle anchor. Configure mpv for X11/XWayland "
-            + "if you want cursor-relative placement.", NoticeDurationMs, ct);
+            + "to make the dictionary popup follow the cursor.", NoticeDurationMs, ct);
         return true;
     }
 

@@ -21,13 +21,29 @@ Subtitles are parsed as they play, each word coloured by its state in your Jiten
 - [mpv](https://mpv.io/)
 - A [Jiten](https://jiten.moe) account and API key
 - ffmpeg, for audio and clip mining. JitenMPV can download it for you.
-- Windows, Linux or macOS. On Linux the dictionary popup needs X11/XWayland.
+- Windows, Linux or macOS. Plasma Wayland and X11/XWayland are supported on Linux.
 
-On a Wayland desktop, add this to `~/.config/mpv/mpv.conf` and restart mpv:
+On Plasma Wayland, both JitenMPV and mpv use native Wayland automatically; no permission prompt or
+mpv override is needed. The Linux installer registers the read-only KWin Wayland interface used for
+popup placement. If you need to force JitenMPV back to XWayland for troubleshooting, start mpv with
+`JITEN_MPV_WINDOWING=x11`.
+
+In fullscreen, JitenMPV combines mpv's output name and pointer coordinates for exact placement,
+including multi-monitor layouts. In windowed mode, it matches mpv by PID through KWin's
+window-management protocol and follows the live client-area geometry when the window moves or
+resizes.
+
+Other Wayland compositors do not expose Plasma's popup placement protocol yet. For those desktops,
+JitenMPV still uses native Wayland and falls back to a deterministic near-subtitle anchor. To opt
+into cursor-relative X11 compatibility instead, add this to `~/.config/mpv/mpv.conf` and restart
+mpv:
 
 ```ini
 gpu-context=x11vk,x11egl
 ```
+
+JitenMPV detects the resulting mpv `window-id` and follows mpv onto X11/XWayland automatically.
+`JITEN_MPV_WINDOWING=x11` or `wayland` remains available as an explicit troubleshooting override.
 
 ## Installation
 
@@ -75,6 +91,7 @@ On macOS, download with `curl` rather than a browser. Browser downloads are quar
 | Program | `%APPDATA%\jiten-mpv\` | `~/.local/share/jiten-mpv/` (`$XDG_DATA_HOME`) |
 | Settings | `%APPDATA%\jiten-mpv\` | `~/.config/jiten-mpv/` (`$XDG_CONFIG_HOME`) |
 | mpv script | `%APPDATA%\mpv\scripts\`, or `portable_config\scripts\` beside `mpv.exe` | `~/.config/mpv/scripts/` |
+| Desktop registration | — | `~/.local/share/applications/jiten-mpv.desktop` |
 
 Set `JITEN_MPV_EXE` if you keep the executable somewhere else.
 

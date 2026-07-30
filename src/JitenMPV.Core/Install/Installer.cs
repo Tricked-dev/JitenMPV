@@ -23,6 +23,7 @@ public static class Installer
 {
     private const string LuaResourceName = "JitenMPV.Core.Resources.jiten-mpv.lua";
     private const string LuaFileName = "jiten-mpv.lua";
+    private const string LinuxDesktopFileName = "jiten-mpv.desktop";
 
     public static string ExecutableName => AppPaths.ExecutableName("JitenMPV.App");
 
@@ -60,6 +61,14 @@ public static class Installer
                 WriteEmbeddedScript(scriptPath);
 
             steps.Add($"Script installed:     {scriptPath}");
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                var desktopPath = LinuxDesktopFilePath();
+                if (!options.DryRun)
+                    WriteLinuxDesktopFile(desktopPath);
+                steps.Add($"{(options.DryRun ? "Would register" : "Desktop registration")}: {desktopPath}");
+            }
+
             return new InstallResult(true, steps, Warning: MissingJapaneseFontWarning());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
@@ -94,6 +103,16 @@ public static class Installer
                 // executable cannot be removed; saying so beats a bare access-denied.
                 if (!options.DryRun) File.Delete(InstalledExecutablePath);
                 steps.Add($"Removed program:      {InstalledExecutablePath}");
+            }
+
+            if (removeProgram && RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            {
+                var desktopPath = LinuxDesktopFilePath();
+                if (File.Exists(desktopPath))
+                {
+                    if (!options.DryRun) File.Delete(desktopPath);
+                    steps.Add($"Removed registration: {desktopPath}");
+                }
             }
 
             steps.Add($"Settings kept in:     {AppPaths.ConfigDir}");
@@ -191,6 +210,39 @@ public static class Installer
 
         using var file = File.Create(destination);
         resource.CopyTo(file);
+    }
+
+    /// KWin restricts its window-management protocol to explicitly registered desktop
+    /// applications. That protocol is read-only here and supplies the absolute client geometry
+    /// needed to place a popup beside a windowed native-Wayland mpv surface.
+    private static void WriteLinuxDesktopFile(string destination)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+
+        var executable = InstalledExecutablePath
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("%", "%%", StringComparison.Ordinal);
+        File.WriteAllText(destination,
+            $"""
+             [Desktop Entry]
+             Type=Application
+             Name=JitenMPV
+             Comment=Japanese subtitle dictionary and mining for mpv
+             Exec="{executable}"
+             Terminal=false
+             NoDisplay=true
+             X-KDE-Wayland-Interfaces=org_kde_plasma_window_management
+
+             """);
+    }
+
+    private static string LinuxDesktopFilePath()
+    {
+        var dataHome = Path.GetDirectoryName(AppPaths.AppDir)
+            ?? throw new InvalidOperationException(
+                "Could not determine the XDG data directory for desktop registration.");
+        return Path.Combine(dataHome, "applications", LinuxDesktopFileName);
     }
 
     public static string CurrentVersion

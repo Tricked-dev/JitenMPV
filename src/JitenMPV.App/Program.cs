@@ -16,6 +16,7 @@ using JitenMPV.App.ViewModels;
 using JitenMPV.App.Views;
 using JitenMPV.Core.Config;
 using JitenMPV.Core.Install;
+using JitenMPV.Core.Mpv;
 using JitenMPV.Core.Plugin;
 using JitenMPV.Core.Update;
 using Microsoft.Extensions.Logging;
@@ -146,8 +147,10 @@ sealed class Program
         };
 
         var pipePath = args[1];
+        var mpvUsesX11 = ProbeMpvUsesX11Async(pipePath, logger)
+            .GetAwaiter().GetResult();
 
-        var appBuilder = BuildAvaloniaApp();
+        var appBuilder = BuildAvaloniaApp(mpvUsesX11);
         appBuilder.Start((app, startArgs) =>
         {
             var lifetime = new ClassicDesktopStyleApplicationLifetime
@@ -230,12 +233,94 @@ sealed class Program
         }, args);
     }
 
-    public static AppBuilder BuildAvaloniaApp()
-        => AppBuilder.Configure<App>()
-                     .UsePlatformDetect()
-                     .WithInterFont()
-                     .With(new FontManagerOptions { FontFallbacks = JapaneseFallbacks() })
-                     .LogToTrace();
+    public static AppBuilder BuildAvaloniaApp(bool? mpvUsesX11 = null)
+    {
+        var builder = AppBuilder.Configure<App>();
+        var requestedBackend = Environment.GetEnvironmentVariable("JITEN_MPV_WINDOWING");
+        var waylandAvailable = OperatingSystem.IsLinux()
+                               && !string.IsNullOrEmpty(
+                                   Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"));
+        var forceX11 = string.Equals(
+            requestedBackend, "x11", StringComparison.OrdinalIgnoreCase);
+        var forceWayland = string.Equals(
+            requestedBackend, "wayland", StringComparison.OrdinalIgnoreCase);
+
+        // Follow mpv's actual video-output backend by default. A configured x11vk/x11egl mpv
+        // exposes window-id and gets the complete X11 integration; a native-Wayland mpv does not,
+        // so Jiten uses Wayland too on Plasma, GNOME, wlroots compositors and everything else.
+        // The environment override remains useful for troubleshooting and takes precedence.
+        var useWayland = waylandAvailable
+                         && !forceX11
+                         && (forceWayland || mpvUsesX11 != true);
+
+        if (useWayland)
+        {
+            // KWin otherwise negotiates server-side decorations before the individual popup's
+            // WindowDecorations=None reaches the backend. Suppressing that negotiation lets
+            // Avalonia draw normal window chrome while keeping the dictionary popup frameless.
+#pragma warning disable AVALONIA_WAYLAND_FORCE_CSD
+            builder.With(new WaylandPlatformOptions { ForceDrawnDecorations = true })
+#pragma warning restore AVALONIA_WAYLAND_FORCE_CSD
+                .UseWayland()
+                .UseSkia()
+                .UseHarfBuzz();
+        }
+        else
+            builder.UsePlatformDetect();
+
+        return builder.WithInterFont()
+                      .With(new FontManagerOptions { FontFallbacks = JapaneseFallbacks() })
+                      .LogToTrace();
+    }
+
+    /// Determines the video window backend before Avalonia selects one. mpv publishes window-id
+    /// only for X11/XWayland outputs; native Wayland deliberately has no foreign window handle.
+    private static async Task<bool?> ProbeMpvUsesX11Async(string pipePath, ILogger logger)
+    {
+        if (!OperatingSystem.IsLinux()
+            || string.Equals(Environment.GetEnvironmentVariable("JITEN_MPV_WINDOWING"),
+                "x11", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using var ipc = new MpvIpcClient(pipePath, logger);
+
+        try
+        {
+            await ipc.ConnectAsync(cts.Token);
+            var readLoop = ipc.RunAsync(cts.Token);
+            try
+            {
+                const int attempts = 8;
+                for (var attempt = 0; attempt < attempts; attempt++)
+                {
+                    if (await ipc.GetPropertyAsync<long?>("window-id", cts.Token) is > 0)
+                        return true;
+                    if (attempt < attempts - 1)
+                        await Task.Delay(100, cts.Token);
+                }
+
+                return false;
+            }
+            finally
+            {
+                await cts.CancelAsync();
+                try
+                {
+                    await readLoop;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            logger.LogDebug(ex,
+                "Could not probe mpv's window backend; using the desktop session default");
+            return null;
+        }
+    }
 
     /// Avalonia reads a comma-separated FontFamily as one family name rather than as a CSS-style
     /// fallback list, so Japanese coverage has to be registered with the font manager instead. The

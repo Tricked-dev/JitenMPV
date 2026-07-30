@@ -66,7 +66,9 @@ public sealed class PluginHost(
     private volatile bool _shuttingDown;
     private volatile string? _currentSubtitleText;
     private long? _mpvWindowId;
+    private int? _mpvProcessId;
     private IReadOnlyList<string> _mpvDisplayNames = [];
+    private bool _mpvIsFullscreen;
 
     /// The line as mpv gave it, kept so the joined form can be recomputed when a setting that
     /// decides whether it fits changes under a subtitle already on screen.
@@ -404,7 +406,7 @@ public sealed class PluginHost(
                         : (long?)null;
                     _mpvWindowId = windowId;
                     popupPresenter.UpdateWindowContext(
-                        new PopupWindowContext(windowId, _mpvDisplayNames));
+                        CurrentPopupWindowContext());
                     return;
                 }
 
@@ -417,7 +419,15 @@ public sealed class PluginHost(
                             .OfType<string>()]
                         : [];
                     popupPresenter.UpdateWindowContext(
-                        new PopupWindowContext(_mpvWindowId, _mpvDisplayNames));
+                        CurrentPopupWindowContext());
+                    return;
+                }
+
+                if (name == "fullscreen")
+                {
+                    _mpvIsFullscreen = data.ValueKind == JsonValueKind.True;
+                    popupPresenter.UpdateWindowContext(
+                        CurrentPopupWindowContext());
                     return;
                 }
 
@@ -487,13 +497,17 @@ public sealed class PluginHost(
             await ipcClient.ObservePropertyAsync("window-id", 6, ct);
             await ipcClient.ObservePropertyAsync("display-names", 7, ct);
             await ipcClient.ObservePropertyAsync("sub-visibility", 8, ct);
+            await ipcClient.ObservePropertyAsync("fullscreen", 9, ct);
 
             await ipcClient.ObservePropertyAsync("sid", 4, ct);
             await ipcClient.ObservePropertyAsync("path", 5, ct);
 
             var widthTask = ipcClient.GetPropertyAsync<int>("osd-width", ct);
             var heightTask = ipcClient.GetPropertyAsync<int>("osd-height", ct);
+            var processIdTask = ipcClient.GetPropertyAsync<int?>("pid", ct);
             osd.Update(await widthTask, await heightTask);
+            _mpvProcessId = await processIdTask;
+            popupPresenter.UpdateWindowContext(CurrentPopupWindowContext());
             renderer.RebuildPreamble();
 
             var clientName = await ipcClient.GetClientNameAsync(ct);
@@ -567,6 +581,9 @@ public sealed class PluginHost(
             _subtitleVisibilityLock.Dispose();
         }
     }
+
+    private PopupWindowContext CurrentPopupWindowContext() =>
+        new(_mpvWindowId, _mpvProcessId, _mpvDisplayNames, _mpvIsFullscreen);
 
     /// Drops the cues of the previous track before reading the new one: the timeline feeds the sentence
     /// on a mined card, so stale cues would put another language on it.
@@ -732,9 +749,9 @@ public sealed class PluginHost(
         return true;
     }
 
-    /// Wayland exposes no global pointer position to an unfocused client and no way for a client to
-    /// place its own toplevel, so the dictionary popup cannot follow the word under the cursor.
-    /// Subtitle colouring is unaffected. Stated once up front rather than left to be discovered.
+    /// Plasma supplies the privileged positioning and foreign-window geometry protocols used by
+    /// the native path. Other compositors still run natively but have to use a deterministic popup
+    /// anchor because core Wayland deliberately exposes neither operation.
     private static async Task<bool> WarnIfWaylandAsync(MpvIpcClient ipc, CancellationToken ct)
     {
         if (!OperatingSystem.IsLinux()) return false;
@@ -749,9 +766,17 @@ public sealed class PluginHost(
         if (await WaitForMpvWindowAsync(ipc, ct))
             return false;
 
+        var currentDesktop = Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP") ?? "";
+        var isPlasma = currentDesktop.Split(':', ';')
+            .Any(desktop => desktop.Equals("KDE", StringComparison.OrdinalIgnoreCase)
+                            || desktop.Equals("Plasma", StringComparison.OrdinalIgnoreCase));
+        if (isPlasma)
+            return false;
+
         await ipc.ShowTextAsync(
-            "jiten-mpv: native Wayland video detected. Subtitle colouring works, but precise "
-            + "dictionary popup placement needs mpv to use X11/XWayland.", NoticeDurationMs, ct);
+            "jiten-mpv: native Wayland is active. This compositor does not expose precise popup "
+            + "placement, so JitenMPV uses a near-subtitle anchor. Configure mpv for X11/XWayland "
+            + "if you want cursor-relative placement.", NoticeDurationMs, ct);
         return true;
     }
 

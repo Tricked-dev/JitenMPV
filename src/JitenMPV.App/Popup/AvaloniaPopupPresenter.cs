@@ -1,12 +1,10 @@
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Threading;
-using JitenMPV.App.Platform;
 using JitenMPV.App.ViewModels;
 using JitenMPV.App.Views;
 using JitenMPV.Core.Config;
@@ -16,271 +14,348 @@ namespace JitenMPV.App.Popup;
 
 public sealed class AvaloniaPopupPresenter : IPopupPresenter
 {
+    private readonly PopupBackendCoordinator _backend = new();
+    private readonly IPopupPositionCalculator _positionCalculator =
+        new PopupPositionCalculator();
+
     private DictionaryPopupWindow? _window;
     private PopupViewModel? _viewModel;
     private volatile bool _isVisible;
-    private PixelPoint? _lastCursorPos;
+    private PopupPointerPosition? _lastPointer;
     private PopupPositionMode _positionMode = PopupPositionMode.AboveSubtitle;
     private PopupAnchor _fixedAnchor = PopupAnchor.TopCenter;
     private int _offsetPx = 60;
     private double _lastFontScale = -1;
     private int _lastMaxWidth = -1;
     private volatile PopupWindowContext _windowContext = PopupWindowContext.Empty;
-    private bool _repositionQueued;
-    private readonly PlasmaWaylandPopupBridge _plasmaWayland = new();
-    private readonly PlasmaWindowGeometryTracker _plasmaWindowGeometry = new();
+
+    private long _revision;
+    private CancellationTokenSource? _operationCts;
+    private CancellationTokenSource? _positionCts;
+    private Task _positionTask = Task.CompletedTask;
+    private PopupSupportLevel _reportedSupportLevel = PopupSupportLevel.Unknown;
+
+    public AvaloniaPopupPresenter()
+    {
+        _backend.GeometryChanged += QueuePositionWindow;
+    }
 
     public bool IsVisible => _isVisible;
+    public PopupSupportLevel SupportLevel => _backend.SupportLevel;
 
     public event Action<PopupAction>? ActionClicked;
     public event Action<int>? DeckSelected;
     public event Action? MouseEntered;
     public event Action? MouseLeft;
+    public event Action<PopupSupportLevel>? SupportLevelChanged;
 
     public void UpdateWindowContext(PopupWindowContext context)
     {
         _windowContext = context;
-        Dispatcher.UIThread.Post(() =>
-        {
-            if (_window?.IsVisible == true)
-            {
-                X11MpvWindowBridge.SetTransientOwner(_window, _windowContext.WindowId);
-                QueuePositionWindow();
-            }
-        });
-    }
-
-    public Task ShowAsync(PopupData data, PopupPointerPosition pointer, CancellationToken ct)
-    {
-        return Dispatcher.UIThread.InvokeAsync(
-            () => ShowOnUiThreadAsync(data, pointer, ct));
-    }
-
-    private async Task ShowOnUiThreadAsync(
-        PopupData data, PopupPointerPosition pointer, CancellationToken ct)
-    {
-        if (ct.IsCancellationRequested) return;
-        EnsureWindow();
-
-        _positionMode = data.PositionMode;
-        _fixedAnchor = data.FixedAnchor;
-        _offsetPx = data.OffsetPx;
-        _viewModel!.Update(data);
-        ApplyFontScale(data.FontScale);
-        ApplyMaxWidth(data.MaxWidthPx);
-        _lastCursorPos = await ResolveCursorPositionAsync(pointer);
-
-        await PositionWindowAsync(_lastCursorPos);
-
-        if (!_window!.IsVisible)
-        {
-            _window.Show();
-
-            // A Wayland hide destroys its wl_surface. Re-showing creates the replacement in
-            // Window.Show(), so attach Plasma metadata once more before the first settled frame.
-            if (_plasmaWayland.IsNativeWayland(_window))
-                await PositionWindowAsync(_lastCursorPos);
-        }
-
-        _isVisible = true;
-        X11MpvWindowBridge.SetTransientOwner(_window, _windowContext.WindowId);
         QueuePositionWindow();
     }
 
-    public Task UpdateAsync(PopupData data, CancellationToken ct)
+    public Task ShowAsync(
+        PopupData data,
+        PopupPointerPosition pointer,
+        CancellationToken ct) =>
+        Dispatcher.UIThread.InvokeAsync(
+            () => ShowOnUiThreadAsync(data, pointer, ct));
+
+    private async Task ShowOnUiThreadAsync(
+        PopupData data,
+        PopupPointerPosition pointer,
+        CancellationToken ct)
     {
-        return Dispatcher.UIThread.InvokeAsync(() =>
+        var (revision, operation) = BeginPopupOperation(ct);
+        var operationToken = operation.Token;
+        CancelQueuedPosition();
+
+        try
         {
-            if (ct.IsCancellationRequested) return;
-            EnsureWindow();
+            operationToken.ThrowIfCancellationRequested();
+            await AwaitQueuedPositionAsync();
+            if (!IsCurrent(revision, _window, operationToken))
+                return;
+
+            var window = EnsureWindow();
+            _positionMode = data.PositionMode;
+            _fixedAnchor = data.FixedAnchor;
+            _offsetPx = data.OffsetPx;
+            _lastPointer = pointer;
+
             _viewModel!.Update(data);
             ApplyFontScale(data.FontScale);
             ApplyMaxWidth(data.MaxWidthPx);
-        }).GetTask();
+            MeasurePopup(window);
+
+            await _backend.PrepareAsync(
+                window, _windowContext, operationToken);
+            ReportSupportLevel();
+            if (!IsCurrent(revision, window, operationToken))
+                return;
+
+            await PositionWindowAsync(window, pointer, operationToken);
+            if (!IsCurrent(revision, window, operationToken))
+                return;
+
+            if (!window.IsVisible)
+                window.Show();
+
+            if (!IsCurrent(revision, window, operationToken))
+                return;
+
+            _isVisible = true;
+
+            // X11 can only apply transient-for after the native handle has been mapped. This does
+            // not recalculate or move the popup and leaves Wayland's one-pass positioning intact.
+            if (!_backend.UsesNativeWayland)
+                await _backend.PrepareAsync(
+                    window, _windowContext, operationToken);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // A newer show/hide operation superseded this one.
+        }
+        finally
+        {
+            EndPopupOperation(operation);
+        }
     }
 
-    public Task HideAsync(CancellationToken ct)
-    {
-        return Dispatcher.UIThread.InvokeAsync(
-            () => HideOnUiThreadAsync(ct));
-    }
+    public Task UpdateAsync(PopupData data, CancellationToken ct) =>
+        Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (ct.IsCancellationRequested)
+                return;
+            var window = EnsureWindow();
+            _viewModel!.Update(data);
+            ApplyFontScale(data.FontScale);
+            ApplyMaxWidth(data.MaxWidthPx);
+            MeasurePopup(window);
+            QueuePositionWindow();
+        }).GetTask();
+
+    public Task HideAsync(CancellationToken ct) =>
+        Dispatcher.UIThread.InvokeAsync(() => HideOnUiThreadAsync(ct));
 
     private async Task HideOnUiThreadAsync(CancellationToken ct)
     {
+        CancelActivePopupOperation();
         _isVisible = false;
         _viewModel?.CloseDeckPicker();
-        if (_window is null) return;
+        CancelQueuedPosition();
 
-        // Plasma requires its metadata object to be destroyed before the wl_surface it decorates.
-        var nativeWayland = _plasmaWayland.IsNativeWayland(_window);
-        await _plasmaWayland.DetachAsync(_window);
-        if (nativeWayland)
+        var window = _window;
+        if (window is null)
+            return;
+
+        await AwaitQueuedPositionAsync();
+        await _backend.DetachAsync(window, ct);
+
+        if (_backend.RequiresWindowRecreationAfterHide)
         {
-            // Avalonia's Wayland Hide() tears down the worker surface and its connection. Reusing
-            // the same high-level Window after that leaves our separately-bound Plasma metadata
-            // coupled to a retired lifecycle and the replacement surface eventually stops mapping.
-            // Closing and recreating this small popup gives every show one coherent surface,
-            // worker connection and Plasma role.
-            _window.Close();
+            window.Close();
             _window = null;
             _viewModel = null;
-            _lastCursorPos = null;
-            _repositionQueued = false;
+            _lastPointer = null;
         }
         else
         {
-            _window.Hide();
+            window.Hide();
         }
     }
 
-    private void EnsureWindow()
+    private DictionaryPopupWindow EnsureWindow()
     {
-        if (_window is not null) return;
+        if (_window is not null)
+            return _window;
 
         _viewModel = new PopupViewModel();
         _viewModel.ActionClicked += action => ActionClicked?.Invoke(action);
         _viewModel.DeckSelected += deckId => DeckSelected?.Invoke(deckId);
 
-        _window = new DictionaryPopupWindow { DataContext = _viewModel };
+        var window = new DictionaryPopupWindow { DataContext = _viewModel };
+        _window = window;
         _lastFontScale = -1;
         _lastMaxWidth = -1;
 
-        _window.PointerEntered += (_, _) => MouseEntered?.Invoke();
-        _window.PointerExited += (_, _) => MouseLeft?.Invoke();
-        _window.SizeChanged += (_, _) => QueuePositionWindow();
+        window.PointerEntered += (_, _) => MouseEntered?.Invoke();
+        window.PointerExited += (_, _) => MouseLeft?.Invoke();
+        window.SizeChanged += (_, _) => QueuePositionWindow();
+        return window;
     }
 
     private void QueuePositionWindow()
     {
-        if (_repositionQueued) return;
-        _repositionQueued = true;
-        Dispatcher.UIThread.Post(async () =>
+        if (!Dispatcher.UIThread.CheckAccess())
         {
-            _repositionQueued = false;
-            if (_isVisible)
-                await PositionWindowAsync(_lastCursorPos);
-        }, DispatcherPriority.Render);
-    }
-
-    private async Task<PixelPoint?> ResolveCursorPositionAsync(PopupPointerPosition pointer)
-    {
-        if (!OperatingSystem.IsLinux())
-            return CursorPositionHelper.GetCursorPosition();
-
-        // Native Wayland does not expose a global position to this XWayland process. An absent mpv
-        // XID therefore means "anchor deterministically", not "reuse X11's last known pointer".
-        var translated = X11MpvWindowBridge.TranslateToRoot(
-            _windowContext.WindowId, pointer.X, pointer.Y);
-        if (translated is not null)
-            return translated;
-        if (_windowContext.WindowId is > 0)
-            return CursorPositionHelper.GetCursorPosition();
-
-        // A fullscreen native-Wayland mpv surface exactly covers the output it reports. mpv's
-        // pointer coordinates can therefore be translated to Plasma's global logical space by
-        // adding that output's origin, including in a multi-monitor layout.
-        if (_windowContext.IsFullscreen && ScreenFromMpvDisplayName() is { } screen)
-        {
-            return new PixelPoint(
-                screen.Bounds.X + (int)Math.Round(pointer.X),
-                screen.Bounds.Y + (int)Math.Round(pointer.Y));
+            Dispatcher.UIThread.Post(QueuePositionWindow);
+            return;
         }
 
-        // A windowed Wayland surface can be moved anywhere, so its output alone is insufficient.
-        // KWin's window-management protocol publishes the absolute client-area origin; adding
-        // mpv's local pointer coordinates gives the same global point X11's translate call does.
-        if (_windowContext.ProcessId is { } processId)
-            return await _plasmaWindowGeometry.TranslateFromClientAsync(processId, pointer);
+        if (!_isVisible || _window is null || _lastPointer is null)
+            return;
 
-        return null;
+        _positionCts?.Cancel();
+        _positionCts?.Dispose();
+        var cts = _positionCts = new CancellationTokenSource();
+        var previous = _positionTask;
+        var revision = Volatile.Read(ref _revision);
+        var window = _window;
+        var pointer = _lastPointer;
+        _positionTask = RunSerializedPositionAsync(
+            previous, revision, window, pointer, cts.Token);
+    }
+
+    private async Task RunSerializedPositionAsync(
+        Task previous,
+        long revision,
+        DictionaryPopupWindow window,
+        PopupPointerPosition pointer,
+        CancellationToken ct)
+    {
+        try
+        {
+            try
+            {
+                await previous;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+
+            ct.ThrowIfCancellationRequested();
+            if (!IsCurrent(revision, window, ct) || !_isVisible)
+                return;
+
+            MeasurePopup(window);
+            await PositionWindowAsync(window, pointer, ct);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task PositionWindowAsync(
+        DictionaryPopupWindow window,
+        PopupPointerPosition pointer,
+        CancellationToken ct)
+    {
+        var size = PopupSize(window);
+        var request = new PopupPlacementRequest(
+            _positionMode,
+            _fixedAnchor,
+            _offsetPx,
+            null);
+        await _backend.PositionAsync(
+            window,
+            _windowContext,
+            pointer,
+            request,
+            size,
+            _positionCalculator,
+            ct);
+        ReportSupportLevel();
+    }
+
+    private static void MeasurePopup(DictionaryPopupWindow window)
+    {
+        window.Measure(Size.Infinity);
+        if (window.DesiredSize.Width > 0 && window.DesiredSize.Height > 0)
+            window.Arrange(new Rect(window.DesiredSize));
+    }
+
+    private static LogicalSize PopupSize(DictionaryPopupWindow window)
+    {
+        var size = window.DesiredSize;
+        if (size.Width <= 0 || size.Height <= 0)
+            size = window.Bounds.Size;
+        return new LogicalSize(
+            size.Width > 0 ? size.Width : 350,
+            size.Height > 0 ? size.Height : 250);
     }
 
     private void ApplyFontScale(double scale)
     {
-        if (_window is null || scale == _lastFontScale) return;
+        if (_window is null || scale == _lastFontScale)
+            return;
         _lastFontScale = scale;
-        var container = _window.FindControl<LayoutTransformControl>("ScaleContainer");
+        var container = _window.FindControl<LayoutTransformControl>(
+            "ScaleContainer");
         if (container is not null)
             container.LayoutTransform = new ScaleTransform(scale, scale);
     }
 
+    private void ReportSupportLevel()
+    {
+        var current = _backend.SupportLevel;
+        if (current == _reportedSupportLevel)
+            return;
+        _reportedSupportLevel = current;
+        SupportLevelChanged?.Invoke(current);
+    }
+
     private void ApplyMaxWidth(int maxWidthPx)
     {
-        if (_window is null || maxWidthPx == _lastMaxWidth || maxWidthPx <= 0) return;
+        if (_window is null || maxWidthPx == _lastMaxWidth || maxWidthPx <= 0)
+            return;
         _lastMaxWidth = maxWidthPx;
         _window.MaxWidth = maxWidthPx;
     }
 
-    private async Task PositionWindowAsync(PixelPoint? cursorPos)
+    private (long Revision, CancellationTokenSource Cancellation)
+        BeginPopupOperation(CancellationToken externalToken)
     {
-        if (_window is null) return;
-
-        var screen = cursorPos is { } known
-            ? _window.Screens.ScreenFromPoint(known)
-            : ScreenFromMpvDisplayName() ?? _window.Screens.Primary;
-        if (screen is null) return;
-
-        var workArea = screen.WorkingArea;
-        var scaling = screen.Scaling;
-
-        var bounds = _window.Bounds.Size;
-        int windowWidth = bounds.Width > 0 ? (int)(bounds.Width * scaling) : 350;
-        int windowHeight = bounds.Height > 0 ? (int)(bounds.Height * scaling) : 250;
-
-        // Without a cursor there is nothing to be relative to, and the clamped result would pin the
-        // popup to the top-left corner. Anchoring it near the subtitles keeps it usable on systems
-        // that cannot report a global pointer position, such as a Wayland session.
-        var (x, y) = _positionMode == PopupPositionMode.Fixed || cursorPos is null
-            ? AnchoredPosition(workArea, windowWidth, windowHeight,
-                cursorPos is null ? PopupAnchor.BottomCenter : _fixedAnchor)
-            : CursorRelativePosition(cursorPos.Value, workArea, windowWidth, windowHeight);
-
-        var position = new PixelPoint(
-            Math.Clamp(x, workArea.X, Math.Max(workArea.X, workArea.Right - windowWidth)),
-            Math.Clamp(y, workArea.Y, Math.Max(workArea.Y, workArea.Bottom - windowHeight)));
-
-        if (!await _plasmaWayland.TrySetPositionAsync(_window, position))
-            _window.Position = position;
+        var revision = Interlocked.Increment(ref _revision);
+        var next = CancellationTokenSource.CreateLinkedTokenSource(
+            externalToken);
+        var previous = Interlocked.Exchange(ref _operationCts, next);
+        previous?.Cancel();
+        previous?.Dispose();
+        return (revision, next);
     }
 
-    private Avalonia.Platform.Screen? ScreenFromMpvDisplayName()
+    private void CancelActivePopupOperation()
     {
-        if (_window is null || _windowContext.DisplayNames.Count == 0) return null;
-
-        return _window.Screens.All.FirstOrDefault(screen =>
-            screen.DisplayName is { } name
-            && _windowContext.DisplayNames.Any(display =>
-                string.Equals(display, name, StringComparison.OrdinalIgnoreCase)));
+        Interlocked.Increment(ref _revision);
+        var operation = Interlocked.Exchange(ref _operationCts, null);
+        operation?.Cancel();
+        operation?.Dispose();
     }
 
-    /// The pointer sits inside the subtitle line it is pointing at, so the offset has to clear the
-    /// text rather than merely separate the popup from the cursor hotspot.
-    private (int X, int Y) CursorRelativePosition(
-        PixelPoint cursor, PixelRect workArea, int width, int height)
+    private void EndPopupOperation(CancellationTokenSource operation)
     {
-        int x = cursor.X - width / 2;
+        if (ReferenceEquals(
+                Interlocked.CompareExchange(
+                    ref _operationCts, null, operation),
+                operation))
+            operation.Dispose();
+    }
 
-        if (_positionMode == PopupPositionMode.BelowSubtitle)
+    private bool IsCurrent(
+        long revision,
+        DictionaryPopupWindow? window,
+        CancellationToken ct) =>
+        !ct.IsCancellationRequested
+        && revision == Volatile.Read(ref _revision)
+        && ReferenceEquals(window, _window);
+
+    private void CancelQueuedPosition()
+    {
+        _positionCts?.Cancel();
+        _positionCts?.Dispose();
+        _positionCts = null;
+    }
+
+    private async Task AwaitQueuedPositionAsync()
+    {
+        try
         {
-            int below = cursor.Y + _offsetPx;
-            return (x, below + height > workArea.Bottom ? cursor.Y - height - _offsetPx : below);
+            await _positionTask;
         }
-
-        int above = cursor.Y - height - _offsetPx;
-        return (x, above < workArea.Y ? cursor.Y + _offsetPx : above);
-    }
-
-    private (int X, int Y) AnchoredPosition(
-        PixelRect workArea, int width, int height, PopupAnchor anchor)
-    {
-        int x = anchor switch
+        catch (OperationCanceledException)
         {
-            PopupAnchor.TopLeft or PopupAnchor.BottomLeft => workArea.X + _offsetPx,
-            PopupAnchor.TopRight or PopupAnchor.BottomRight => workArea.Right - width - _offsetPx,
-            _ => workArea.X + (workArea.Width - width) / 2
-        };
-
-        bool top = anchor is PopupAnchor.TopLeft or PopupAnchor.TopCenter or PopupAnchor.TopRight;
-        return (x, top ? workArea.Y + _offsetPx : workArea.Bottom - height - _offsetPx);
+        }
     }
 }

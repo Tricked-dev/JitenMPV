@@ -72,6 +72,20 @@ end
 
 local startup = read_startup_settings()
 
+-- KWin reports a container's host PID while mpv reports its namespace PID, so PID alone cannot
+-- always identify the correct native Wayland window. Give default-app-id mpv instances a stable,
+-- per-process token before the video output is created and pass the same token to the plugin.
+local mpv_wayland_app_id = nil
+if not is_windows then
+    local configured_app_id = mp.get_property("options/wayland-app-id")
+    if not configured_app_id or configured_app_id == "" or configured_app_id == "mpv" then
+        mpv_wayland_app_id = "io.jiten.mpv." .. tostring(mp.get_property("pid"))
+        mp.set_property("options/wayland-app-id", mpv_wayland_app_id)
+    else
+        mpv_wayland_app_id = configured_app_id
+    end
+end
+
 local plugin_started = false
 
 -- The plugin hides mpv's own subtitles for as long as it is drawing its coloured ones. If it dies
@@ -625,7 +639,7 @@ local function initialize()
     mp.command_native_async({
         name = "subprocess",
         playback_only = false,
-        args = { exe, "plugin", ipc_path }
+        args = { exe, "plugin", ipc_path, mpv_wayland_app_id or "" }
     }, function()
         plugin_started = false
         set_plugin_client(nil)

@@ -16,6 +16,7 @@ using JitenMPV.App.ViewModels;
 using JitenMPV.App.Views;
 using JitenMPV.Core.Config;
 using JitenMPV.Core.Install;
+using JitenMPV.Core.Interaction;
 using JitenMPV.Core.Mpv;
 using JitenMPV.Core.Plugin;
 using JitenMPV.Core.Update;
@@ -147,10 +148,10 @@ sealed class Program
         };
 
         var pipePath = args[1];
-        var mpvUsesX11 = ProbeMpvUsesX11Async(pipePath, logger)
+        var mpvBackend = DetectMpvBackendAsync(pipePath, logger)
             .GetAwaiter().GetResult();
 
-        var appBuilder = BuildAvaloniaApp(mpvUsesX11);
+        var appBuilder = BuildAvaloniaApp(mpvBackend);
         appBuilder.Start((app, startArgs) =>
         {
             var lifetime = new ClassicDesktopStyleApplicationLifetime
@@ -162,7 +163,14 @@ sealed class Program
             var reviewPresenter = new MiningReviewPresenter();
             var overwritePresenter = new MediaOverwritePresenter();
             var host = new PluginHost(
-                pipePath, logger, presenter, reviewPresenter, overwritePresenter);
+                pipePath,
+                logger,
+                presenter,
+                reviewPresenter,
+                overwritePresenter,
+                args.Length >= 3 && !string.IsNullOrWhiteSpace(args[2])
+                    ? args[2]
+                    : null);
             SettingsWindow? settingsWindow = null;
             bool settingsOpening = false;
 
@@ -233,7 +241,8 @@ sealed class Program
         }, args);
     }
 
-    public static AppBuilder BuildAvaloniaApp(bool? mpvUsesX11 = null)
+    public static AppBuilder BuildAvaloniaApp(
+        MpvWindowBackend mpvBackend = MpvWindowBackend.Unknown)
     {
         var builder = AppBuilder.Configure<App>();
         var requestedBackend = Environment.GetEnvironmentVariable("JITEN_MPV_WINDOWING");
@@ -251,7 +260,7 @@ sealed class Program
         // The environment override remains useful for troubleshooting and takes precedence.
         var useWayland = waylandAvailable
                          && !forceX11
-                         && (forceWayland || mpvUsesX11 != true);
+                         && (forceWayland || mpvBackend != MpvWindowBackend.X11);
 
         if (useWayland)
         {
@@ -273,14 +282,16 @@ sealed class Program
                       .LogToTrace();
     }
 
-    /// Determines the video window backend before Avalonia selects one. mpv publishes window-id
-    /// only for X11/XWayland outputs; native Wayland deliberately has no foreign window handle.
-    private static async Task<bool?> ProbeMpvUsesX11Async(string pipePath, ILogger logger)
+    /// Determines the video window backend before Avalonia selects one. current-gpu-context is
+    /// mpv's authoritative backend; window-id remains only the X11 window handle.
+    private static async Task<MpvWindowBackend> DetectMpvBackendAsync(
+        string pipePath,
+        ILogger logger)
     {
         if (!OperatingSystem.IsLinux()
             || string.Equals(Environment.GetEnvironmentVariable("JITEN_MPV_WINDOWING"),
                 "x11", StringComparison.OrdinalIgnoreCase))
-            return null;
+            return MpvWindowBackend.Unknown;
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await using var ipc = new MpvIpcClient(pipePath, logger);
@@ -294,13 +305,16 @@ sealed class Program
                 const int attempts = 8;
                 for (var attempt = 0; attempt < attempts; attempt++)
                 {
-                    if (await ipc.GetPropertyAsync<long?>("window-id", cts.Token) is > 0)
-                        return true;
+                    var gpuContext = await ipc.GetPropertyAsync<string?>(
+                        "current-gpu-context", cts.Token);
+                    var backend = MpvWindowBackendDetector.FromGpuContext(gpuContext);
+                    if (backend != MpvWindowBackend.Unknown)
+                        return backend;
                     if (attempt < attempts - 1)
                         await Task.Delay(100, cts.Token);
                 }
 
-                return false;
+                return MpvWindowBackend.Unknown;
             }
             finally
             {
@@ -318,7 +332,7 @@ sealed class Program
         {
             logger.LogDebug(ex,
                 "Could not probe mpv's window backend; using the desktop session default");
-            return null;
+            return MpvWindowBackend.Unknown;
         }
     }
 

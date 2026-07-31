@@ -58,14 +58,6 @@ is_wayland_session() {
         { [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; }
 }
 
-is_plasma_session() {
-    case ":${XDG_CURRENT_DESKTOP:-}:${DESKTOP_SESSION:-}:" in
-        *KDE* | *kde* | *Plasma* | *plasma*) return 0 ;;
-    esac
-
-    [ "${KDE_FULL_SESSION:-}" = "true" ] || [ -n "${KDE_SESSION_VERSION:-}" ]
-}
-
 has_libx11() {
     { ldconfig -p 2>/dev/null | grep -q 'libX11\.so\.6'; } ||
         [ -e /usr/lib/libX11.so.6 ] ||
@@ -120,11 +112,9 @@ else
 fi
 
 if [ "$(uname -s)" = "Linux" ]; then
-    if is_wayland_session && is_plasma_session; then
-        echo "Wayland: KDE Plasma detected; the dictionary popup can follow the cursor natively."
-    elif is_wayland_session; then
-        echo "Wayland: native mode enabled; outside Plasma, popup placement is approximate."
-        echo "To make the dictionary popup follow the cursor, use mpv through X11/XWayland."
+    if is_wayland_session; then
+        echo "Wayland: native mode enabled; exact popup capabilities are probed at runtime."
+        echo "If exact placement is unavailable, use mpv through X11/XWayland."
     elif ! has_libx11; then
         echo
         echo "note: libX11 was not found; install it so the dictionary popup can follow the cursor."

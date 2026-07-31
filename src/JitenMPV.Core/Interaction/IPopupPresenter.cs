@@ -3,6 +3,7 @@ namespace JitenMPV.Core.Interaction;
 public interface IPopupPresenter
 {
     bool IsVisible { get; }
+    PopupSupportLevel SupportLevel { get; }
 
     void UpdateWindowContext(PopupWindowContext context);
     Task ShowAsync(PopupData data, PopupPointerPosition pointer, CancellationToken ct);
@@ -14,4 +15,5 @@ public interface IPopupPresenter
     event Action<int>? DeckSelected;
     event Action? MouseEntered;
     event Action? MouseLeft;
+    event Action<PopupSupportLevel>? SupportLevelChanged;
 }

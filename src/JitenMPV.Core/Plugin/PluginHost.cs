@@ -21,7 +21,8 @@ public sealed class PluginHost(
     ILogger logger,
     IPopupPresenter popupPresenter,
     IMiningReviewPresenter? reviewPresenter = null,
-    IMediaOverwritePresenter? overwritePresenter = null)
+    IMediaOverwritePresenter? overwritePresenter = null,
+    string? mpvAppId = null)
 {
     internal const int SubtitleOverlayId = 1;
     internal const int PitchUnderlineOverlayId = 2;
@@ -69,6 +70,8 @@ public sealed class PluginHost(
     private int? _mpvProcessId;
     private IReadOnlyList<string> _mpvDisplayNames = [];
     private bool _mpvIsFullscreen;
+    private MpvWindowBackend _mpvWindowBackend;
+    private string? _mpvWaylandAppId = mpvAppId;
 
     /// The line as mpv gave it, kept so the joined form can be recomputed when a setting that
     /// decides whether it fits changes under a subtitle already on screen.
@@ -383,6 +386,25 @@ public sealed class PluginHost(
                 });
             };
 
+            popupPresenter.SupportLevelChanged += supportLevel =>
+            {
+                var warning = supportLevel switch
+                {
+                    PopupSupportLevel.FullscreenAndFixedOnly =>
+                        "jiten-mpv: this compositor supports exact fullscreen and fixed popup "
+                        + "placement, but not cursor-relative placement for a windowed mpv.",
+                    PopupSupportLevel.Approximate =>
+                        "jiten-mpv: this compositor exposes no exact popup placement backend. "
+                        + "Use mpv through X11/XWayland for cursor-relative placement.",
+                    PopupSupportLevel.Unsupported =>
+                        "jiten-mpv: this compositor cannot host the external dictionary popup.",
+                    _ => null
+                };
+                if (warning is not null)
+                    _ = RunSafe(() => ipcClient.ShowTextAsync(
+                        warning, NoticeDurationMs, ct));
+            };
+
             ipcClient.SubtitleTextChanged += text =>
             {
                 _currentSubtitleRaw = text;
@@ -426,6 +448,16 @@ public sealed class PluginHost(
                 if (name == "fullscreen")
                 {
                     _mpvIsFullscreen = data.ValueKind == JsonValueKind.True;
+                    popupPresenter.UpdateWindowContext(
+                        CurrentPopupWindowContext());
+                    return;
+                }
+
+                if (name == "current-gpu-context")
+                {
+                    _mpvWindowBackend = data.ValueKind == JsonValueKind.String
+                        ? MpvWindowBackendDetector.FromGpuContext(data.GetString())
+                        : MpvWindowBackend.Unknown;
                     popupPresenter.UpdateWindowContext(
                         CurrentPopupWindowContext());
                     return;
@@ -498,6 +530,7 @@ public sealed class PluginHost(
             await ipcClient.ObservePropertyAsync("display-names", 7, ct);
             await ipcClient.ObservePropertyAsync("sub-visibility", 8, ct);
             await ipcClient.ObservePropertyAsync("fullscreen", 9, ct);
+            await ipcClient.ObservePropertyAsync("current-gpu-context", 10, ct);
 
             await ipcClient.ObservePropertyAsync("sid", 4, ct);
             await ipcClient.ObservePropertyAsync("path", 5, ct);
@@ -505,8 +538,16 @@ public sealed class PluginHost(
             var widthTask = ipcClient.GetPropertyAsync<int>("osd-width", ct);
             var heightTask = ipcClient.GetPropertyAsync<int>("osd-height", ct);
             var processIdTask = ipcClient.GetPropertyAsync<int?>("pid", ct);
+            var backendTask = ipcClient.GetPropertyAsync<string?>(
+                "current-gpu-context", ct);
+            var appIdTask = _mpvWaylandAppId is null
+                ? ipcClient.GetPropertyAsync<string?>("wayland-app-id", ct)
+                : Task.FromResult<string?>(_mpvWaylandAppId);
             osd.Update(await widthTask, await heightTask);
             _mpvProcessId = await processIdTask;
+            _mpvWindowBackend = MpvWindowBackendDetector.FromGpuContext(
+                await backendTask);
+            _mpvWaylandAppId = await appIdTask;
             popupPresenter.UpdateWindowContext(CurrentPopupWindowContext());
             renderer.RebuildPreamble();
 
@@ -583,7 +624,13 @@ public sealed class PluginHost(
     }
 
     private PopupWindowContext CurrentPopupWindowContext() =>
-        new(_mpvWindowId, _mpvProcessId, _mpvDisplayNames, _mpvIsFullscreen);
+        new(
+            _mpvWindowId,
+            _mpvProcessId,
+            _mpvDisplayNames,
+            _mpvIsFullscreen,
+            _mpvWindowBackend,
+            _mpvWaylandAppId);
 
     /// Drops the cues of the previous track before reading the new one: the timeline feeds the sentence
     /// on a mined card, so stale cues would put another language on it.
@@ -727,7 +774,6 @@ public sealed class PluginHost(
         Func<Task<bool>>[] notices =
         [
             () => WarnIfFfmpegMissingAsync(ipc, settings, ct),
-            () => WarnIfWaylandAsync(ipc, ct),
             () => NotifyUpdateAsync(ipc, settings, ct)
         ];
 
@@ -747,53 +793,6 @@ public sealed class PluginHost(
             "jiten-mpv: no API key set, so subtitles cannot be looked up yet. "
             + "Press Ctrl+J to paste your key from jiten.moe.", NoticeDurationMs, ct);
         return true;
-    }
-
-    /// Plasma supplies the privileged positioning and foreign-window geometry protocols used by
-    /// the native path. Other compositors still run natively but have to use a deterministic popup
-    /// anchor because core Wayland deliberately exposes neither operation.
-    private static async Task<bool> WarnIfWaylandAsync(MpvIpcClient ipc, CancellationToken ct)
-    {
-        if (!OperatingSystem.IsLinux()) return false;
-
-        var wayland = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY"))
-                      || string.Equals(Environment.GetEnvironmentVariable("XDG_SESSION_TYPE"),
-                          "wayland", StringComparison.OrdinalIgnoreCase);
-        if (!wayland) return false;
-
-        // A Wayland desktop is fine when mpv itself selected X11/XWayland: window-id is then an XID
-        // and the popup can be positioned and parented through the same X display.
-        if (await WaitForMpvWindowAsync(ipc, ct))
-            return false;
-
-        var currentDesktop = Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP") ?? "";
-        var isPlasma = currentDesktop.Split(':', ';')
-            .Any(desktop => desktop.Equals("KDE", StringComparison.OrdinalIgnoreCase)
-                            || desktop.Equals("Plasma", StringComparison.OrdinalIgnoreCase));
-        if (isPlasma)
-            return false;
-
-        await ipc.ShowTextAsync(
-            "jiten-mpv: native Wayland is active. This compositor does not expose precise popup "
-            + "placement, so JitenMPV uses a near-subtitle anchor. Configure mpv for X11/XWayland "
-            + "to make the dictionary popup follow the cursor.", NoticeDurationMs, ct);
-        return true;
-    }
-
-    /// mpv publishes window-id only once the video output window exists, so reading it once at startup
-    /// reports "no window" for an XWayland session that is merely still coming up.
-    private static async Task<bool> WaitForMpvWindowAsync(MpvIpcClient ipc, CancellationToken ct)
-    {
-        const int attempts = 10;
-        var interval = TimeSpan.FromMilliseconds(200);
-
-        for (int i = 0; i < attempts; i++)
-        {
-            if (await ipc.GetPropertyAsync<long?>("window-id", ct) is > 0) return true;
-            if (i < attempts - 1) await Task.Delay(interval, ct);
-        }
-
-        return false;
     }
 
     /// Audio and clip mining shell out to ffmpeg, so its absence is a half-broken install rather

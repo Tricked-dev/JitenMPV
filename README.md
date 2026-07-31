@@ -23,9 +23,10 @@ Subtitles are parsed as they play, each word coloured by its state in your Jiten
 - ffmpeg, for audio and clip mining. JitenMPV can download it for you.
 - Windows, Linux or macOS. Linux supports Plasma Wayland and X11/XWayland.
 
-On Plasma, JitenMPV and mpv use native Wayland automatically with accurate popup placement,
-including windowed, fullscreen and multi-monitor setups. No permission prompt or mpv configuration
-is required.
+On Plasma with window-management protocol v18 or newer, JitenMPV and mpv use native Wayland with
+accurate popup placement, including windowed, fullscreen and multi-monitor setups. JitenMPV follows
+mpv's reported GPU context and probes the compositor protocols directly; no desktop-name guess,
+permission prompt or mpv configuration is required.
 
 Other Wayland compositors use native Wayland with approximate placement. To make the dictionary
 popup follow the cursor through X11/XWayland, add this to `~/.config/mpv/mpv.conf`:

@@ -14,7 +14,6 @@ public enum PopupSupportLevel
 {
     Unknown,
     Full,
-    FullscreenAndFixedOnly,
     Approximate,
     Unsupported
 }

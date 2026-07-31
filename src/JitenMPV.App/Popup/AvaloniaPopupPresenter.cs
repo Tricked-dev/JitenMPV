@@ -42,6 +42,7 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
 
     public bool IsVisible => _isVisible;
     public PopupSupportLevel SupportLevel => _backend.SupportLevel;
+    public bool RequiresPointerTransferGrace => _backend.UsesNativeWayland;
 
     public event Action<PopupAction>? ActionClicked;
     public event Action<int>? DeckSelected;

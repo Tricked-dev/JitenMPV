@@ -1,9 +1,11 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using JitenMPV.App.Popup;
 using JitenMPV.Core.Interaction;
 using NWayland.Protocols.Plasma.PlasmaShell;
@@ -37,9 +39,9 @@ internal sealed class PlasmaWaylandConnectionStore
 
 internal sealed class PlasmaWaylandConnection
 {
-    private const bool AllowSingleMpvCompatibilityFallback = true;
     private static readonly BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    private static int _reportedMissingBindMethod;
 
     private readonly object _gate = new();
     private readonly object _globals;
@@ -159,8 +161,7 @@ internal sealed class PlasmaWaylandConnection
             // single-mpv behavior as an explicit compatibility path, never as a fallback after
             // a unique app ID failed to match.
             if (window is null
-                && string.IsNullOrWhiteSpace(context.AppId)
-                && AllowSingleMpvCompatibilityFallback)
+                && string.IsNullOrWhiteSpace(context.AppId))
             {
                 var mpvWindows = candidates
                     .Where(candidate => string.Equals(
@@ -246,11 +247,26 @@ internal sealed class PlasmaWaylandConnection
         uint maximumVersion,
         object? listener)
     {
-        var bindMethod = globals.GetType()
-            .GetMethods(InstanceFlags)
-            .Single(method => method.Name == "Bind"
-                              && method.IsGenericMethodDefinition
-                              && method.GetParameters().Length == 3);
+        MethodInfo bindMethod;
+        try
+        {
+            bindMethod = globals.GetType()
+                .GetMethods(InstanceFlags)
+                .Single(method => method.Name == "Bind"
+                                  && method.IsGenericMethodDefinition
+                                  && method.GetParameters().Length == 3);
+        }
+        catch (InvalidOperationException)
+        {
+            if (Interlocked.Exchange(ref _reportedMissingBindMethod, 1) == 0)
+                Trace.TraceWarning(
+                    "Plasma Wayland integration could not resolve Avalonia member "
+                    + "'{0}.Bind<T>(UInt32, UInt32, listener)'; falling back to approximate "
+                    + "placement.",
+                    globals.GetType().FullName);
+            throw;
+        }
+
         return (T?)bindMethod.MakeGenericMethod(typeof(T))
             .Invoke(globals, [minimumVersion, maximumVersion, listener]);
     }

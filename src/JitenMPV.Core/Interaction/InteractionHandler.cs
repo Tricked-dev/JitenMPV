@@ -276,7 +276,9 @@ public sealed class InteractionHandler : IDisposable
 
         if (StickyPopup && _popup.IsVisible) return;
 
-        if (_popup.IsVisible && !_popup.IsMouseOverPopup)
+        if (_popup.IsVisible
+            && _popup.RequiresPointerTransferGrace
+            && !_popup.IsMouseOverPopup)
         {
             // On Wayland the compositor reports that the pointer left mpv before Avalonia reports
             // that it entered the popup's separate surface. Give that cross-surface handoff one

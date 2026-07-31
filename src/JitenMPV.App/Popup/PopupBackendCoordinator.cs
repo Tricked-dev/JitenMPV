@@ -124,7 +124,6 @@ internal sealed class PopupBackendCoordinator : IAsyncDisposable
             context,
             new SurfacePoint(pointer.X, pointer.Y),
             geometry,
-            output,
             UsesNativeWayland,
             discovered is not null);
         var popupSize = UsesNativeWayland
@@ -216,20 +215,13 @@ internal sealed class PopupBackendCoordinator : IAsyncDisposable
         PopupWindowContext context,
         SurfacePoint pointer,
         MpvWindowGeometry geometry,
-        OutputInfo output,
         bool nativeWayland,
         bool hasDiscoveredGeometry)
     {
-        if ((context.Backend == MpvWindowBackend.X11
-             || context.WindowId is > 0)
-            && hasDiscoveredGeometry)
-        {
-            return new GlobalLogicalPoint(
-                geometry.ClientOrigin.X + pointer.X,
-                geometry.ClientOrigin.Y + pointer.Y);
-        }
-
-        if (nativeWayland && hasDiscoveredGeometry)
+        if (hasDiscoveredGeometry
+            && (nativeWayland
+                || context.Backend == MpvWindowBackend.X11
+                || context.WindowId is > 0))
         {
             return new GlobalLogicalPoint(
                 geometry.ClientOrigin.X + pointer.X,
@@ -239,13 +231,6 @@ internal sealed class PopupBackendCoordinator : IAsyncDisposable
         if (!OperatingSystem.IsLinux()
             && CursorPositionHelper.GetCursorPosition() is { } cursor)
             return new GlobalLogicalPoint(cursor.X, cursor.Y);
-
-        // A fullscreen Wayland surface covers its output exactly, even without foreign-toplevel
-        // geometry. Windowed fallback intentionally has no pretend global pointer.
-        if (nativeWayland && context.IsFullscreen)
-            return new GlobalLogicalPoint(
-                output.Bounds.X + pointer.X,
-                output.Bounds.Y + pointer.Y);
 
         return null;
     }

@@ -390,9 +390,6 @@ public sealed class PluginHost(
             {
                 var warning = supportLevel switch
                 {
-                    PopupSupportLevel.FullscreenAndFixedOnly =>
-                        "jiten-mpv: this compositor supports exact fullscreen and fixed popup "
-                        + "placement, but not cursor-relative placement for a windowed mpv.",
                     PopupSupportLevel.Approximate =>
                         "jiten-mpv: this compositor exposes no exact popup placement backend. "
                         + "Use mpv through X11/XWayland for cursor-relative placement.",

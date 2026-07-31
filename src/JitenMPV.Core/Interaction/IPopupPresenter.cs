@@ -4,6 +4,7 @@ public interface IPopupPresenter
 {
     bool IsVisible { get; }
     PopupSupportLevel SupportLevel { get; }
+    bool RequiresPointerTransferGrace { get; }
 
     void UpdateWindowContext(PopupWindowContext context);
     Task ShowAsync(PopupData data, PopupPointerPosition pointer, CancellationToken ct);

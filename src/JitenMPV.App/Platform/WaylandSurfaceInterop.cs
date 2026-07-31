@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Threading;
@@ -38,6 +39,7 @@ internal static class WaylandSurfaceInterop
 {
     private static readonly BindingFlags InstanceFlags =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    private static int _reportedMissingMember;
 
     public static bool IsNativeWayland(Window window) =>
         window.PlatformImpl?.GetType().Assembly.GetName().Name == "Avalonia.Wayland";
@@ -57,7 +59,10 @@ internal static class WaylandSurfaceInterop
             // hook. Keeping it here means protocol backends no longer know platform internals.
             var showMethod = impl.GetType().GetMethod(
                 "Show", InstanceFlags, null, [typeof(bool), typeof(bool)], null);
-            showMethod?.Invoke(impl, [false, false]);
+            if (showMethod is null)
+                ReportMissingMember("Show(Boolean, Boolean)");
+            else
+                showMethod.Invoke(impl, [false, false]);
             surfaceProxy = GetSurfaceProxy(impl);
         }
 
@@ -68,6 +73,13 @@ internal static class WaylandSurfaceInterop
                                        && method.IsGenericMethodDefinition
                                        && method.GetGenericArguments().Length == 1
                                        && method.GetParameters().Length == 1);
+
+        if (surfaceProxy is null)
+            ReportMissingMember("SurfaceProxy/_surfaceProxy");
+        else if (client is null)
+            ReportMissingMember("Client");
+        else if (invokeMethod is null)
+            ReportMissingMember("Client.InvokeOobAsync<T>(Func<T>)");
 
         return surfaceProxy is null || client is null || invokeMethod is null
             ? null
@@ -96,6 +108,14 @@ internal static class WaylandSurfaceInterop
         surface = FindProperty(target.GetType(), "WlSurface")?.GetValue(target)
                   as WlSurface ?? null!;
         return globals is not null && surface is not null;
+    }
+
+    private static void ReportMissingMember(string member)
+    {
+        if (Interlocked.Exchange(ref _reportedMissingMember, 1) == 0)
+            Trace.TraceWarning(
+                "Native Wayland popup integration could not resolve Avalonia member '{0}'; "
+                + "falling back to approximate placement.", member);
     }
 
     private static FieldInfo? FindField(Type? type, string name)

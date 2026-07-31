@@ -158,13 +158,6 @@ internal sealed class PopupBackendCoordinator : IAsyncDisposable
         PopupWindowContext context,
         MpvWindowGeometry? geometry)
     {
-        var byName = window.Screens.All.FirstOrDefault(screen =>
-            screen.DisplayName is { } name
-            && context.DisplayNames.Any(display =>
-                string.Equals(display, name, StringComparison.OrdinalIgnoreCase)));
-        if (byName is not null)
-            return byName;
-
         if (geometry is not null)
         {
             var center = new PixelPoint(
@@ -176,6 +169,13 @@ internal sealed class PopupBackendCoordinator : IAsyncDisposable
             if (byGeometry is not null)
                 return byGeometry;
         }
+
+        var byName = window.Screens.All.FirstOrDefault(screen =>
+            screen.DisplayName is { } name
+            && context.DisplayNames.Any(display =>
+                string.Equals(display, name, StringComparison.OrdinalIgnoreCase)));
+        if (byName is not null)
+            return byName;
 
         return window.Screens.Primary;
     }

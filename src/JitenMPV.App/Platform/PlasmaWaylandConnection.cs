@@ -74,9 +74,9 @@ internal sealed class PlasmaWaylandConnection
                     AddWindow(management, uuid)
             };
             _management = Bind<OrgKdePlasmaWindowManagement>(
-                globals, 18, 19, listener);
+                globals, 13, 19, listener);
 
-            GeometryStatus = _management is { Version: >= 18 }
+            GeometryStatus = _management is { Version: >= 13 }
                 ? GeometryProviderStatus.Ready
                 : GeometryProviderStatus.Unsupported;
         }
@@ -136,7 +136,7 @@ internal sealed class PlasmaWaylandConnection
         lock (_gate)
         {
             var candidates = _windows.Values
-                .Where(window => window.ClientGeometry is not null)
+                .Where(window => Geometry(window) is not null)
                 .ToArray();
 
             var window = context.ProcessId is { } processId
@@ -171,7 +171,7 @@ internal sealed class PlasmaWaylandConnection
                 window = mpvWindows.Length == 1 ? mpvWindows[0] : null;
             }
 
-            if (window?.ClientGeometry is not { } client)
+            if (window is null || Geometry(window) is not { } client)
             {
                 geometry = default;
                 return false;
@@ -202,6 +202,13 @@ internal sealed class PlasmaWaylandConnection
                 lock (_gate)
                     tracked.ProcessId = processId;
             },
+            OnGeometry = (_, x, y, width, height) =>
+            {
+                lock (_gate)
+                    tracked.FrameGeometry = new LogicalRect(
+                        x, y, width, height);
+                GeometryChanged?.Invoke();
+            },
             OnClientGeometry = (_, x, y, width, height) =>
             {
                 lock (_gate)
@@ -216,6 +223,9 @@ internal sealed class PlasmaWaylandConnection
         lock (_gate)
             _windows[proxy.Id] = tracked;
     }
+
+    private static LogicalRect? Geometry(TrackedWindow window) =>
+        window.ClientGeometry ?? window.FrameGeometry;
 
     private void RemoveWindow(TrackedWindow tracked)
     {
@@ -326,6 +336,7 @@ internal sealed class PlasmaWaylandConnection
         public OrgKdePlasmaWindow? Proxy { get; set; }
         public string? AppId { get; set; }
         public uint ProcessId { get; set; }
+        public LogicalRect? FrameGeometry { get; set; }
         public LogicalRect? ClientGeometry { get; set; }
     }
 

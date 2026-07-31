@@ -149,8 +149,7 @@ public sealed class PluginHost(
         _colorizer.UpdateDetectors(iPlusOne, freqMarker);
 
         if (_keybindManager is not null)
-            _ = RunSafe(() => _keybindManager.ConfigureKeybindsAsync(
-                newSettings.PopupKeybinds, newSettings.ReviewsEnabled, CancellationToken.None));
+            _ = RunSafe(() => _keybindManager.ConfigureKeybindsAsync(newSettings, CancellationToken.None));
 
         if (_ipcClient is { } ipc)
         {
@@ -568,7 +567,7 @@ public sealed class PluginHost(
 
             await SendNavKeysAsync(ipcClient, settings, ct);
 
-            await keybindManager.ConfigureKeybindsAsync(settings.PopupKeybinds, settings.ReviewsEnabled, ct);
+            await keybindManager.ConfigureKeybindsAsync(settings, ct);
 
             if (settings.MiningEnabled || settings.PopupShowDeckMembership)
                 _ = RunSafe(() => miningService.RefreshDecksAsync(ct));

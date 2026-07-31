@@ -27,6 +27,7 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
     private int _offsetPx = 60;
     private double _lastFontScale = -1;
     private int _lastMaxWidth = -1;
+    private bool _pointerInside;
     private volatile PopupWindowContext _windowContext = PopupWindowContext.Empty;
 
     private long _revision;
@@ -144,6 +145,7 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
     {
         CancelActivePopupOperation();
         _isVisible = false;
+        _pointerInside = false;
         _viewModel?.CloseDeckPicker();
         CancelQueuedPosition();
 
@@ -181,9 +183,22 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
         _lastFontScale = -1;
         _lastMaxWidth = -1;
 
-        window.PointerEntered += (_, _) => MouseEntered?.Invoke();
-        window.PointerExited += (_, _) => MouseLeft?.Invoke();
-        window.SizeChanged += (_, _) => QueuePositionWindow();
+        window.PointerEntered += (_, _) =>
+        {
+            _pointerInside = true;
+            MouseEntered?.Invoke();
+        };
+        window.PointerExited += (_, _) =>
+        {
+            _pointerInside = false;
+            MouseLeft?.Invoke();
+        };
+
+        window.SizeChanged += (_, _) =>
+        {
+            if (!_pointerInside)
+                QueuePositionWindow();
+        };
         return window;
     }
 

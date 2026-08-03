@@ -31,6 +31,8 @@ public sealed class MiningReviewPresenter : IMiningReviewPresenter
             await using var reg = ct.Register(() => Dispatcher.UIThread.Post(window.Close));
 
             window.Show();
+            window.Topmost = false;
+            window.Topmost = true;
             window.Activate();
 
             return await completion.Task;

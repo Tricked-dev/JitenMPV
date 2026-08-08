@@ -8,6 +8,10 @@ namespace JitenMPV.Core.Plugin;
 public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
 {
     private const int MeasureId = 99;
+    private const float WrapTolerance = 2f;
+
+    private sealed record MeasuredLine(
+        string Text, int StartIdx, OverlayBounds? Ink, OverlayBounds? Centered);
 
     /// Every prefix is measured with this glyph appended and the glyph's own ink extent subtracted
     /// back out, which recovers the pen position exactly. Measuring the bare prefix instead reads
@@ -107,10 +111,77 @@ public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
             lineCentered[li] = await tasks.Centered;
         }
 
-        int firstIdx = -1, lastIdx = -1;
+        var visualLines = new List<MeasuredLine>();
         for (int li = 0; li < lines.Count; li++)
         {
-            if (lineInk[li] is not { Height: > 0 }) continue;
+            var (lineText, lineStartIdx) = lines[li];
+            var ink = lineInk[li];
+            var centered = lineCentered[li];
+
+            if (lineText.Length == 0 || ink is null || centered is null)
+            {
+                visualLines.Add(new MeasuredLine(lineText, lineStartIdx, ink, centered));
+                continue;
+            }
+
+            if (centered.Height <= ink.Height + WrapTolerance)
+            {
+                visualLines.Add(new MeasuredLine(lineText, lineStartIdx, ink, centered));
+                continue;
+            }
+
+            var prefixTasks = new Dictionary<int, Task<OverlayBounds?>>();
+            for (int p = 1; p <= lineText.Length; p++)
+            {
+                var prefix = AssTagBuilder.EscapeText(lineText[..p]);
+                prefixTasks[p] = ipc.MeasureOverlayAsync(
+                    AllocId(), $@"{{\an{align}{posTags}{styleTags}\shad0\blur0}}{prefix}", ct);
+            }
+
+            await Task.WhenAll(prefixTasks.Values);
+            var prefixBounds = new Dictionary<int, OverlayBounds?>();
+            foreach (var (p, task) in prefixTasks)
+                prefixBounds[p] = await task;
+
+            foreach (var (visualText, visualStart) in SplitWrappedLine(lineText, prefixBounds, ink.Height))
+                visualLines.Add(new MeasuredLine(visualText, lineStartIdx + visualStart, null, null));
+        }
+
+        var visualMeasureTasks = new Dictionary<int, (Task<OverlayBounds?> Ink, Task<OverlayBounds?> Centered)>();
+        for (int li = 0; li < visualLines.Count; li++)
+        {
+            var line = visualLines[li];
+            if (line.Text.Length == 0 || (line.Ink is not null && line.Centered is not null)) continue;
+
+            var escapedLine = AssTagBuilder.EscapeText(line.Text);
+            visualMeasureTasks[li] = (
+                ipc.MeasureOverlayAsync(AllocId(), $"{MeasureTags()}{escapedLine}", ct),
+                ipc.MeasureOverlayAsync(AllocId(), $@"{{\an{align}{posTags}{styleTags}\shad0\blur0}}{escapedLine}", ct));
+        }
+
+        await Task.WhenAll(visualMeasureTasks.Values.SelectMany(t => new[] { t.Ink, t.Centered }));
+        foreach (var (li, tasks) in visualMeasureTasks)
+        {
+            var line = visualLines[li];
+            visualLines[li] = line with
+            {
+                Ink = await tasks.Ink,
+                Centered = await tasks.Centered
+            };
+        }
+
+        if (visualLines.Any(line => line.Ink is { } ink
+                                 && line.Centered is { } centered
+                                 && centered.Height > ink.Height + WrapTolerance))
+        {
+            await RemoveOverlaysAsync(ipc, nextId, ct);
+            return rects;
+        }
+
+        int firstIdx = -1, lastIdx = -1;
+        for (int li = 0; li < visualLines.Count; li++)
+        {
+            if (visualLines[li].Ink is not { Height: > 0 }) continue;
             if (firstIdx < 0) firstIdx = li;
             lastIdx = li;
         }
@@ -123,29 +194,31 @@ public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
 
         // Line slots are one font line apart regardless of each line's ink, so the spacing is the
         // block height minus the last line's own ink height, spread over the slots between them.
-        float lineSpacing = (float)(fullBounds.Height / Math.Max(lines.Count, 1));
+        float lineSpacing = (float)(fullBounds.Height / Math.Max(visualLines.Count, 1));
         if (lastIdx > firstIdx)
         {
-            float derived = (float)((fullBounds.Height - lineInk[lastIdx]!.Height) / (lastIdx - firstIdx));
+            float derived = (float)((fullBounds.Height - visualLines[lastIdx].Ink!.Height)
+                                    / (lastIdx - firstIdx));
             if (derived > 1f) lineSpacing = derived;
         }
 
-        var linePrefixes = new List<int>?[lines.Count];
-        for (int li = 0; li < lines.Count; li++)
+        var linePrefixes = new List<int>?[visualLines.Count];
+        for (int li = 0; li < visualLines.Count; li++)
         {
-            var (lineText, lineStartIdx) = lines[li];
-            if (lineText.Length == 0 || lineInk[li] is null || lineCentered[li] is null) continue;
+            var line = visualLines[li];
+            if (line.Text.Length == 0 || line.Ink is null || line.Centered is null) continue;
 
             var positions = new SortedSet<int>();
             foreach (var token in entry.Tokens)
             {
-                if (token.Start < lineStartIdx ||
-                    token.Start + token.Length > lineStartIdx + lineText.Length) continue;
-                positions.Add(token.Start - lineStartIdx);
-                positions.Add(token.Start - lineStartIdx + token.Length);
+                int tokenStart = Math.Max(token.Start, line.StartIdx);
+                int tokenEnd = Math.Min(token.Start + token.Length, line.StartIdx + line.Text.Length);
+                if (tokenStart >= tokenEnd) continue;
+                positions.Add(tokenStart - line.StartIdx);
+                positions.Add(tokenEnd - line.StartIdx);
             }
 
-            var prefixes = positions.Where(p => p > 0 && p <= lineText.Length).ToList();
+            var prefixes = positions.Where(p => p > 0 && p <= line.Text.Length).ToList();
             if (prefixes.Count > 0) linePrefixes[li] = prefixes;
         }
 
@@ -158,24 +231,29 @@ public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
                 sentinelInkX1 = (float)sentinelBounds.X1;
         }
 
-        for (int li = 0; li < lines.Count; li++)
+        for (int li = 0; li < visualLines.Count; li++)
         {
             if (linePrefixes[li] is not { } prefixPositions) continue;
 
-            var (lineText, lineStartIdx) = lines[li];
+            var line = visualLines[li];
             var lineTokens = entry.Tokens
                 .Select((t, i) => (Index: i, Token: t))
-                .Where(x => x.Token.Start >= lineStartIdx
-                         && x.Token.Start + x.Token.Length <= lineStartIdx + lineText.Length)
+                .Select(x =>
+                {
+                    int start = Math.Max(x.Token.Start, line.StartIdx);
+                    int end = Math.Min(x.Token.Start + x.Token.Length, line.StartIdx + line.Text.Length);
+                    return (x.Index, x.Token, Start: start, End: end);
+                })
+                .Where(x => x.Start < x.End)
                 .ToList();
 
             if (lineTokens.Count == 0) continue;
-            if (lineInk[li] is not { X1: > 0 } || lineCentered[li] is null) continue;
+            if (line.Ink is not { X1: > 0 } || line.Centered is null) continue;
 
             var prefixTasks = new Dictionary<int, Task<OverlayBounds?>>();
             foreach (var pos in prefixPositions)
             {
-                var prefixText = AssTagBuilder.EscapeText(lineText[..pos]);
+                var prefixText = AssTagBuilder.EscapeText(line.Text[..pos]);
                 if (sentinelInkX1 is not null) prefixText += SentinelGlyph;
                 prefixTasks[pos] = ipc.MeasureOverlayAsync(AllocId(), $"{MeasureTags()}{prefixText}", ct);
             }
@@ -193,20 +271,20 @@ public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
             // bearing (large for opening brackets) plus any leading whitespace; the an7 measurement
             // of the same line carries the identical offset from MeasureOrigin, so subtracting it
             // recovers the on-screen pen origin that prefix pen positions are relative to.
-            float penOrigin = (float)lineCentered[li]!.X0 - ((float)lineInk[li]!.X0 - MeasureOrigin);
+            float penOrigin = (float)line.Centered.X0 - ((float)line.Ink.X0 - MeasureOrigin);
 
             float lineY = (float)fullBounds.Y0 + (li - firstIdx) * lineSpacing;
-            float lineHeight = (float)lineInk[li]!.Height;
+            float lineHeight = (float)line.Ink.Height;
 
-            foreach (var (idx, token) in lineTokens)
+            foreach (var piece in lineTokens)
             {
-                int localStart = token.Start - lineStartIdx;
-                int localEnd = localStart + token.Length;
+                int localStart = piece.Start - line.StartIdx;
+                int localEnd = piece.End - line.StartIdx;
 
                 float x0 = penOrigin + advances.GetValueOrDefault(localStart, border) - border;
                 float x1 = penOrigin + advances.GetValueOrDefault(localEnd, border) - border;
 
-                rects.Add(new WordRect(idx, token.WordId, token.ReadingIndex,
+                rects.Add(new WordRect(piece.Index, piece.Token.WordId, piece.Token.ReadingIndex,
                     x0, lineY, Math.Max(x1 - x0, 1), lineHeight));
             }
         }
@@ -239,6 +317,32 @@ public sealed class SubtitleMeasurer(PluginSettings settings, OsdState osd)
                 advances[pos] = (float)bounds.X1 - MeasureOrigin;
         }
         return advances;
+    }
+
+    private static List<(string Text, int StartIdx)> SplitWrappedLine(
+        string text, IReadOnlyDictionary<int, OverlayBounds?> prefixBounds, double noWrapHeight)
+    {
+        var lines = new List<(string, int)>();
+        int lineStart = 0;
+        double maxHeight = noWrapHeight;
+
+        for (int p = 1; p <= text.Length; p++)
+        {
+            if (prefixBounds[p] is not { } bounds
+                || bounds.Height <= maxHeight + WrapTolerance
+                || p - 1 <= lineStart)
+                continue;
+
+            int nextLineStart = p - 1;
+            lines.Add((text[lineStart..nextLineStart], lineStart));
+            lineStart = nextLineStart;
+            maxHeight = bounds.Height;
+        }
+
+        if (lineStart < text.Length)
+            lines.Add((text[lineStart..], lineStart));
+
+        return lines;
     }
 
     private static List<(string Text, int StartIdx)> SplitLines(string text)

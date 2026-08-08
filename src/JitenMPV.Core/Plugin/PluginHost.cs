@@ -72,6 +72,7 @@ public sealed class PluginHost(
     private bool _mpvIsFullscreen;
     private MpvWindowBackend _mpvWindowBackend;
     private string? _mpvWaylandAppId = mpvAppId;
+    private string? _mpvWindowTitle;
 
     /// The line as mpv gave it, kept so the joined form can be recomputed when a setting that
     /// decides whether it fits changes under a subtitle already on screen.
@@ -459,6 +460,12 @@ public sealed class PluginHost(
                     return;
                 }
 
+                if (name is "title" or "media-title")
+                {
+                    _ = RunSafe(() => RefreshMpvWindowTitleAsync(ipcClient, ct));
+                    return;
+                }
+
                 if (name == "sub-visibility")
                 {
                     if (data.ValueKind == JsonValueKind.True && !_shuttingDown)
@@ -527,6 +534,8 @@ public sealed class PluginHost(
             await ipcClient.ObservePropertyAsync("sub-visibility", 8, ct);
             await ipcClient.ObservePropertyAsync("fullscreen", 9, ct);
             await ipcClient.ObservePropertyAsync("current-gpu-context", 10, ct);
+            await ipcClient.ObservePropertyAsync("title", 11, ct);
+            await ipcClient.ObservePropertyAsync("media-title", 12, ct);
 
             await ipcClient.ObservePropertyAsync("sid", 4, ct);
             await ipcClient.ObservePropertyAsync("path", 5, ct);
@@ -544,6 +553,7 @@ public sealed class PluginHost(
             _mpvWindowBackend = MpvWindowBackendDetector.FromGpuContext(
                 await backendTask);
             _mpvWaylandAppId = await appIdTask;
+            await RefreshMpvWindowTitleAsync(ipcClient, ct);
             popupPresenter.UpdateWindowContext(CurrentPopupWindowContext());
             renderer.RebuildPreamble();
 
@@ -626,7 +636,19 @@ public sealed class PluginHost(
             _mpvDisplayNames,
             _mpvIsFullscreen,
             _mpvWindowBackend,
-            _mpvWaylandAppId);
+            _mpvWaylandAppId,
+            _mpvWindowTitle);
+
+    private async Task RefreshMpvWindowTitleAsync(
+        MpvIpcClient ipc,
+        CancellationToken ct)
+    {
+        var template = await ipc.GetPropertyAsync<string?>("title", ct);
+        _mpvWindowTitle = string.IsNullOrWhiteSpace(template)
+            ? null
+            : await ipc.ExpandTextAsync(template, ct);
+        popupPresenter.UpdateWindowContext(CurrentPopupWindowContext());
+    }
 
     /// Drops the cues of the previous track before reading the new one: the timeline feeds the sentence
     /// on a mined card, so stale cues would put another language on it.

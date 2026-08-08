@@ -155,11 +155,25 @@ internal sealed class PlasmaWaylandConnection
                     .Take(2)
                     .ToArray();
                 window = appMatches.Length == 1 ? appMatches[0] : null;
+
+                if (window is null && !string.IsNullOrWhiteSpace(context.Title))
+                {
+                    var titleMatches = candidates
+                        .Where(candidate => string.Equals(
+                            candidate.AppId, context.AppId,
+                            StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(
+                                candidate.Title, context.Title,
+                                StringComparison.Ordinal))
+                        .Take(2)
+                        .ToArray();
+                    window = titleMatches.Length == 1 ? titleMatches[0] : null;
+                }
             }
 
-            // Old/external launchers do not pass the per-instance app ID. Keep their former
-            // single-mpv behavior as an explicit compatibility path, never as a fallback after
-            // a unique app ID failed to match.
+            // Old/external launchers may not pass an app ID. Keep their former single-mpv
+            // behavior as an explicit compatibility path, never as a guess after a supplied
+            // identity failed to match.
             if (window is null
                 && string.IsNullOrWhiteSpace(context.AppId))
             {
@@ -197,6 +211,11 @@ internal sealed class PlasmaWaylandConnection
             {
                 lock (_gate)
                     tracked.AppId = appId;
+            },
+            OnTitleChanged = (_, title) =>
+            {
+                lock (_gate)
+                    tracked.Title = title;
             },
             OnPidChanged = (_, processId) =>
             {
@@ -351,6 +370,7 @@ internal sealed class PlasmaWaylandConnection
     {
         public OrgKdePlasmaWindow? Proxy { get; set; }
         public string? AppId { get; set; }
+        public string? Title { get; set; }
         public uint ProcessId { get; set; }
         public LogicalRect? FrameGeometry { get; set; }
         public LogicalRect? ClientGeometry { get; set; }

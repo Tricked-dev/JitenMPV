@@ -72,9 +72,9 @@ end
 
 local startup = read_startup_settings()
 
--- KWin reports a container's host PID while mpv reports its namespace PID, so PID alone cannot
--- always identify the correct native Wayland window. Give default-app-id mpv instances a stable,
--- per-process token before the video output is created and pass the same token to the plugin.
+-- Sandboxed mpv instances can all report the same namespace PID. Keep the random token for the
+-- private IPC socket, but leave Wayland's app ID alone: compositors use the standard mpv identity
+-- to resolve its desktop entry and icon. The plugin distinguishes native windows by PID or title.
 local mpv_instance_token = tostring(mp.get_property("pid"))
 local mpv_wayland_app_id = nil
 if not is_windows then
@@ -83,13 +83,7 @@ if not is_windows then
     if ok and temp_path then os.remove(temp_path) end
     unique_suffix = unique_suffix or string.format("%.0f", mp.get_time() * 1000000)
     mpv_instance_token = mpv_instance_token .. "-" .. unique_suffix
-    local configured_app_id = mp.get_property("options/wayland-app-id")
-    if not configured_app_id or configured_app_id == "" or configured_app_id == "mpv" then
-        mpv_wayland_app_id = "io.jiten.mpv." .. mpv_instance_token
-        mp.set_property("options/wayland-app-id", mpv_wayland_app_id)
-    else
-        mpv_wayland_app_id = configured_app_id
-    end
+    mpv_wayland_app_id = mp.get_property("options/wayland-app-id")
 end
 
 local plugin_started = false

@@ -39,8 +39,9 @@ public sealed record PopupWindowContext(
     IReadOnlyList<string> DisplayNames,
     bool IsFullscreen,
     MpvWindowBackend Backend = MpvWindowBackend.Unknown,
-    string? AppId = null)
+    string? AppId = null,
+    string? Title = null)
 {
     public static PopupWindowContext Empty { get; } =
-        new(null, null, [], false, MpvWindowBackend.Unknown, null);
+        new(null, null, [], false, MpvWindowBackend.Unknown, null, null);
 }

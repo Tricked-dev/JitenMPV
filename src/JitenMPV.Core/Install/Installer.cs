@@ -167,13 +167,30 @@ public static class Installer
         if (dryRun) return $"Would copy:           {source}";
 
         Directory.CreateDirectory(AppPaths.AppDir);
-        File.Copy(source, destination, overwrite: true);
-
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            File.SetUnixFileMode(destination,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            File.Copy(source, destination, overwrite: true);
+        }
+        else
+        {
+            // Do not overwrite the inode of a running Unix executable: Linux rejects that with
+            // ETXTBSY. Stage a complete executable beside it, then atomically replace the path;
+            // the running plugin keeps its old inode and the next launch receives this build.
+            var staged = destination + ".new";
+            try
+            {
+                File.Copy(source, staged, overwrite: true);
+                File.SetUnixFileMode(staged,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                File.Move(staged, destination, overwrite: true);
+            }
+            finally
+            {
+                try { File.Delete(staged); } catch { }
+            }
+        }
 
         return $"Program copied:       {destination}";
     }

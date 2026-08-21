@@ -5,6 +5,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Media;
 using Avalonia.Threading;
+using JitenMPV.App.Platform;
 using JitenMPV.App.ViewModels;
 using JitenMPV.App.Views;
 using JitenMPV.Core.Config;
@@ -95,8 +96,11 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
             _viewModel!.Update(data);
             ApplyFontScale(data.FontScale);
             ApplyMaxWidth(data.MaxWidthPx);
-            var needsNativeLayout = OperatingSystem.IsMacOS()
-                                    && !window.IsVisible;
+            var needsNativeLayout = PopupLayoutPolicy.RequiresMappedLayout(
+                OperatingSystem.IsMacOS(),
+                OperatingSystem.IsLinux()
+                && WaylandSurfaceInterop.IsNativeWayland(window),
+                window.IsVisible);
             if (!needsNativeLayout)
                 MeasurePopup(window);
 
@@ -112,11 +116,13 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
                 window.Show();
                 provisionalShow = true;
 
-                // Cocoa determines a SizeToContent top-level's native bounds when it is mapped.
-                // Keep the provisional native window transparent until it has been placed using
-                // the resulting size, so its default mapping position never flashes onscreen.
+                // Cocoa and native Wayland determine a SizeToContent top-level's final native
+                // bounds when it is mapped. Keep the provisional window transparent until it has
+                // been measured and placed using those bounds, so its default mapping position
+                // never flashes onscreen.
                 await Dispatcher.UIThread.InvokeAsync(
                     static () => { }, DispatcherPriority.Render);
+                MeasurePopup(window);
             }
 
             if (!IsCurrent(revision, window, operationToken))
@@ -294,7 +300,7 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
         PopupPointerPosition pointer,
         CancellationToken ct)
     {
-        var size = PopupSize(window);
+        var size = PopupSize(window, _backend.UsesNativeWayland);
         var request = new PopupPlacementRequest(
             _positionMode,
             _fixedAnchor,
@@ -322,16 +328,13 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
         }
     }
 
-    private static LogicalSize PopupSize(DictionaryPopupWindow window)
+    private static LogicalSize PopupSize(
+        DictionaryPopupWindow window, bool nativeWayland)
     {
-        var size = OperatingSystem.IsMacOS() && window.IsVisible
-            ? window.Bounds.Size
-            : window.DesiredSize;
-        if (size.Width <= 0 || size.Height <= 0)
-            size = window.Bounds.Size;
-        return new LogicalSize(
-            size.Width > 0 ? size.Width : 350,
-            size.Height > 0 ? size.Height : 250);
+        return PopupLayoutPolicy.PlacementSize(
+            OperatingSystem.IsMacOS(), nativeWayland, window.IsVisible,
+            new LogicalSize(window.Bounds.Width, window.Bounds.Height),
+            new LogicalSize(window.DesiredSize.Width, window.DesiredSize.Height));
     }
 
     private void ApplyFontScale(double scale)
@@ -415,5 +418,27 @@ public sealed class AvaloniaPopupPresenter : IPopupPresenter
         catch (OperationCanceledException)
         {
         }
+    }
+}
+
+internal static class PopupLayoutPolicy
+{
+    public static bool RequiresMappedLayout(
+        bool isMacOS, bool nativeWayland, bool isVisible) =>
+        (isMacOS || nativeWayland) && !isVisible;
+
+    public static LogicalSize PlacementSize(
+        bool isMacOS,
+        bool nativeWayland,
+        bool isVisible,
+        LogicalSize bounds,
+        LogicalSize desired)
+    {
+        var size = (isMacOS || nativeWayland) && isVisible ? bounds : desired;
+        if (size.Width <= 0 || size.Height <= 0)
+            size = bounds;
+        return new LogicalSize(
+            size.Width > 0 ? size.Width : 350,
+            size.Height > 0 ? size.Height : 250);
     }
 }

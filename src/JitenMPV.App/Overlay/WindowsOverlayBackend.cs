@@ -74,8 +74,9 @@ internal sealed class WindowsOverlayBackend : IMpvOverlayBackend
         return geometry;
     }
 
-    public OverlayLogicalSize Apply(Window window, OverlayGeometry geometry)
-        => OverlayGeometryApplier.ApplyPhysical(window, geometry);
+    public ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct) =>
+        ValueTask.FromResult(OverlayGeometryApplier.ApplyPhysical(window, geometry));
 
     private IntPtr? ResolveMpvWindow(PopupWindowContext context)
     {

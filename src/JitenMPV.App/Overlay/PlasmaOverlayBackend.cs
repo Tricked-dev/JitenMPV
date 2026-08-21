@@ -59,7 +59,7 @@ internal sealed class PlasmaOverlayBackend : IMpvOverlayBackend
     public OverlayGeometry? TryGetGeometry(PopupWindowContext context)
     {
         if (_connection is not { } connection) return null;
-        if (!connection.TryGetGeometry(context, out var geometry)) return null;
+        if (!connection.TryGetOverlayGeometry(context, out var geometry)) return null;
         if (geometry.Size.Width <= 0 || geometry.Size.Height <= 0) return null;
 
         return new OverlayGeometry(
@@ -68,7 +68,8 @@ internal sealed class PlasmaOverlayBackend : IMpvOverlayBackend
 
     /// KWin already works in logical units, so the size goes straight onto the window and only the
     /// position needs the Plasma protocol; Wayland gives a client no way to place itself otherwise.
-    public OverlayLogicalSize Apply(Window window, OverlayGeometry geometry)
+    public async ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct)
     {
         window.Width = geometry.Width;
         window.Height = geometry.Height;
@@ -76,11 +77,11 @@ internal sealed class PlasmaOverlayBackend : IMpvOverlayBackend
         var interop = WaylandSurfaceInterop.TryCreate(window, createSurfaceIfMissing: false);
         if (interop is not null && _connection is not null)
         {
-            _ = interop.InvokeAsync(surface =>
+            await interop.InvokeAsync(surface =>
                     _connections.Get(surface.Globals).SetPosition(
                         surface.Surface,
                         (int)Math.Round(geometry.X), (int)Math.Round(geometry.Y), AnyOutput),
-                WaylandCommitBehavior.WithNextFrame, CancellationToken.None);
+                WaylandCommitBehavior.WithNextFrame, ct);
         }
 
         return new OverlayLogicalSize(geometry.Width, geometry.Height);

@@ -133,12 +133,23 @@ internal sealed class PlasmaWaylandConnection
 
     public bool TryGetGeometry(
         PopupWindowContext context,
+        out ClientGeometry geometry) =>
+        TryGetGeometry(context, PlasmaGeometryPurpose.PopupPlacement, out geometry);
+
+    public bool TryGetOverlayGeometry(
+        PopupWindowContext context,
+        out ClientGeometry geometry) =>
+        TryGetGeometry(context, PlasmaGeometryPurpose.SubtitleOverlay, out geometry);
+
+    private bool TryGetGeometry(
+        PopupWindowContext context,
+        PlasmaGeometryPurpose purpose,
         out ClientGeometry geometry)
     {
         lock (_gate)
         {
             var candidates = _windows.Values
-                .Where(window => Geometry(window) is not null)
+                .Where(window => Geometry(window, purpose) is not null)
                 .ToArray();
 
             var window = context.ProcessId is { } processId
@@ -186,7 +197,7 @@ internal sealed class PlasmaWaylandConnection
                 window = mpvWindows.Length == 1 ? mpvWindows[0] : null;
             }
 
-            if (window is null || Geometry(window) is not { } client)
+            if (window is null || Geometry(window, purpose) is not { } client)
             {
                 geometry = default;
                 return false;
@@ -222,6 +233,12 @@ internal sealed class PlasmaWaylandConnection
                 lock (_gate)
                     tracked.ProcessId = processId;
             },
+            OnStateChanged = (_, state) =>
+            {
+                lock (_gate)
+                    tracked.State = state;
+                GeometryChanged?.Invoke();
+            },
             OnGeometry = (_, x, y, width, height) =>
             {
                 lock (_gate)
@@ -244,8 +261,11 @@ internal sealed class PlasmaWaylandConnection
             _windows[proxy.Id] = tracked;
     }
 
-    private static LogicalRect? Geometry(TrackedWindow window) =>
-        window.ClientGeometry ?? window.FrameGeometry;
+    private static LogicalRect? Geometry(
+        TrackedWindow window, PlasmaGeometryPurpose purpose) =>
+        PlasmaWindowVisibility.CanUseGeometry(window.State, purpose)
+            ? window.ClientGeometry ?? window.FrameGeometry
+            : null;
 
     private void RemoveWindow(TrackedWindow tracked)
     {
@@ -379,9 +399,29 @@ internal sealed class PlasmaWaylandConnection
         public string? AppId { get; set; }
         public string? Title { get; set; }
         public uint ProcessId { get; set; }
+        public uint State { get; set; }
         public LogicalRect? FrameGeometry { get; set; }
         public LogicalRect? ClientGeometry { get; set; }
     }
 
     private sealed record SurfaceState(OrgKdePlasmaSurface Surface);
+}
+
+internal static class PlasmaWindowVisibility
+{
+    public static bool CanUseGeometry(uint state, PlasmaGeometryPurpose purpose) =>
+        purpose == PlasmaGeometryPurpose.PopupPlacement || CanShowOverlay(state);
+
+    public static bool CanShowOverlay(uint state)
+    {
+        var flags = (OrgKdePlasmaWindowManagement.StateEnum)state;
+        return flags.HasFlag(OrgKdePlasmaWindowManagement.StateEnum.Active)
+               && !flags.HasFlag(OrgKdePlasmaWindowManagement.StateEnum.Minimized);
+    }
+}
+
+internal enum PlasmaGeometryPurpose
+{
+    PopupPlacement,
+    SubtitleOverlay
 }

@@ -19,6 +19,7 @@ internal sealed class SubtitleOverlayWindow : Window
         CanResize = false;
         SizeToContent = SizeToContent.Manual;
         Topmost = false;
+        Opacity = 0;
         IsHitTestVisible = false;
         Focusable = false;
         Width = 1;

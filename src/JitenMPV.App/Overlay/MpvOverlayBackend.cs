@@ -27,7 +27,8 @@ internal interface IMpvOverlayBackend : IAsyncDisposable
 
     OverlayGeometry? TryGetGeometry(PopupWindowContext context);
 
-    OverlayLogicalSize Apply(Window window, OverlayGeometry geometry);
+    ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct);
 }
 
 internal static class OverlayGeometryApplier
@@ -63,7 +64,9 @@ internal sealed class UnsupportedOverlayBackend : IMpvOverlayBackend
 
     public OverlayGeometry? TryGetGeometry(PopupWindowContext context) => null;
 
-    public OverlayLogicalSize Apply(Window window, OverlayGeometry geometry) => default;
+    public ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct) =>
+        ValueTask.FromResult(default(OverlayLogicalSize));
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

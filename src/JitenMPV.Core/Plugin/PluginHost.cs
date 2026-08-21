@@ -74,6 +74,7 @@ public sealed class PluginHost(
     /// the setting changes or the surface reports the mpv window back.
     private volatile bool _surfaceFallback;
     private volatile bool _surfaceNoticeShown;
+    private int _subtitleRendererPath;
 
     /// The rects the bar overlay was last drawn against, so a re-render driven by interaction can
     /// redraw the bars without re-measuring the line that is already on screen.
@@ -395,7 +396,15 @@ public sealed class PluginHost(
         else
             await interaction.OnSubtitleRenderedAsync(text, text, render.Entry, rects, ct);
 
+        ReportSubtitleRenderer(SubtitleRendererPath.NativeAvalonia);
         return true;
+    }
+
+    private void ReportSubtitleRenderer(SubtitleRendererPath path)
+    {
+        int value = (int)path;
+        if (Interlocked.Exchange(ref _subtitleRendererPath, value) == value) return;
+        logger.LogInformation("Subtitle renderer path: {RendererPath}", path);
     }
 
     /// Re-colours the line already on screen without re-measuring it: with the native renderer a
@@ -419,10 +428,11 @@ public sealed class PluginHost(
     private async Task MarkSurfaceUnavailableAsync(CancellationToken ct)
     {
         _surfaceFallback = true;
+        bool temporarilyUnavailable = overlaySurface is { IsAvailable: true };
         if (overlaySurface is { } surface)
             await surface.ClearAsync(ct);
 
-        if (_surfaceNoticeShown || _ipcClient is not { } ipc) return;
+        if (temporarilyUnavailable || _surfaceNoticeShown || _ipcClient is not { } ipc) return;
         _surfaceNoticeShown = true;
         await ipc.ShowTextAsync(
             "jiten-mpv: native renderer unavailable here, using mpv rendering.", NoticeDurationMs, ct);
@@ -1159,6 +1169,7 @@ public sealed class PluginHost(
 
             await Task.WhenAll(showTask, measureTask);
             if (Superseded()) return;
+            ReportSubtitleRenderer(SubtitleRendererPath.MpvFallback);
             var layout = measureTask.Result;
             _lastLayout = layout;
 
@@ -1178,5 +1189,12 @@ public sealed class PluginHost(
         {
             logger.LogError(ex, "Error processing subtitle change");
         }
+    }
+
+    private enum SubtitleRendererPath
+    {
+        Unknown,
+        NativeAvalonia,
+        MpvFallback
     }
 }

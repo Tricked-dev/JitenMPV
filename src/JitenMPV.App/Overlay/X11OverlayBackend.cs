@@ -57,14 +57,15 @@ internal sealed class X11OverlayBackend : IMpvOverlayBackend
         return new OverlayGeometry(origin.X, origin.Y, size.Width, size.Height);
     }
 
-    public OverlayLogicalSize Apply(Window window, OverlayGeometry geometry)
+    public ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct)
     {
         var size = OverlayGeometryApplier.ApplyPhysical(window, geometry);
 
         // X11 drops transient-for whenever the window manager re-parents the overlay, which a move
         // between monitors or a fullscreen toggle does.
         X11MpvWindowBridge.SetTransientOwner(window, _mpvWindowId);
-        return size;
+        return ValueTask.FromResult(size);
     }
 
     public ValueTask DisposeAsync()

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Controls;
@@ -16,8 +17,12 @@ namespace JitenMPV.App.Overlay;
 /// own render loop.
 public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
 {
+    private static readonly TimeSpan InitialGeometryWait = TimeSpan.FromMilliseconds(750);
+
     private readonly SubtitleFontStore _fonts = new();
     private readonly SubtitleLayoutEngine _engine;
+    private readonly SubtitleOverlayLifecycle _lifecycle = new();
+    private readonly SemaphoreSlim _geometryApplyLock = new(1, 1);
 
     private volatile PluginSettings? _settings;
     private volatile PopupWindowContext _context = PopupWindowContext.Empty;
@@ -29,11 +34,7 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
     private SubtitleOverlayControl? _control;
     private IMpvOverlayBackend? _backend;
     private (int? ProcessId, long? WindowId)? _preparedFor;
-    private OverlayGeometry? _appliedGeometry;
-    private double _appliedScaling;
-    private OverlayLogicalSize _appliedSize;
-    private bool _windowFound;
-    private long _revision;
+    private TaskCompletionSource _geometryChanged = NewGeometrySignal();
 
     public AvaloniaSubtitleOverlaySurface()
     {
@@ -46,20 +47,24 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
 
     public Task<IReadOnlyList<WordRect>?> ShowAsync(SubtitleFrame frame, CancellationToken ct)
     {
-        long revision = Interlocked.Increment(ref _revision);
+        long revision = _lifecycle.BeginFrame(frame);
         return Dispatcher.UIThread.InvokeAsync(() => ShowCoreAsync(frame, revision, ct));
     }
 
     public Task ClearAsync(CancellationToken ct)
     {
-        Interlocked.Increment(ref _revision);
-        return Dispatcher.UIThread.InvokeAsync(() => _control?.SetFrame(null)).GetTask();
+        _lifecycle.Clear();
+        return Dispatcher.UIThread.InvokeAsync(HideFrame).GetTask();
     }
 
     public void UpdateSettings(PluginSettings settings)
     {
         var previous = _settings;
         _settings = settings;
+
+        if (previous?.ExperimentalAvaloniaRenderer == false
+            && settings.ExperimentalAvaloniaRenderer)
+            _unavailable = false;
 
         if (previous?.ExperimentalAvaloniaRenderer == true && !settings.ExperimentalAvaloniaRenderer)
             _ = Dispatcher.UIThread.InvokeAsync(TearDownAsync);
@@ -79,7 +84,8 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
         SubtitleFrame frame, long revision, CancellationToken ct)
     {
         var settings = _settings;
-        if (settings is null || _unavailable || ct.IsCancellationRequested) return null;
+        if (settings is null || _unavailable) return null;
+        if (!_lifecycle.Owns(revision, ct)) return [];
 
         int osdWidth = _osdWidth;
         int osdHeight = _osdHeight;
@@ -91,31 +97,32 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
         if (!backend.IsSupported)
         {
             _unavailable = true;
+            HideFrame();
             return null;
         }
 
-        if (backend.TryGetGeometry(context) is not { } geometry)
+        if (await WaitForGeometryAsync(backend, ct) is not { } geometry)
         {
-            _windowFound = false;
-            _control!.SetFrame(null);
+            HideFrame();
             return null;
         }
 
-        _windowFound = true;
-        var size = ApplyGeometry(backend, window, geometry);
+        var size = await ApplyGeometryAsync(backend, window, geometry, ct);
         if (size.Height <= 0) return null;
 
         // A slower frame must never overwrite a newer one, and the marshal to this thread is where
         // the two can cross.
-        if (revision != Volatile.Read(ref _revision) || ct.IsCancellationRequested) return null;
+        if (!_lifecycle.Owns(revision, ct)) return [];
 
         var laidOut = _engine.Layout(frame, settings, osdWidth, osdHeight, size.Height);
         if (laidOut is null) return null;
+        if (!_lifecycle.Owns(revision, ct)) return [];
 
-        _control!.SetFrame(laidOut);
-        if (_control.LeaseUnavailable)
+        Present(laidOut);
+        if (_control?.LeaseUnavailable == true)
         {
             _unavailable = true;
+            HideFrame();
             return null;
         }
 
@@ -189,52 +196,167 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
             : new UnsupportedOverlayBackend();
     }
 
+    private async Task<OverlayGeometry?> WaitForGeometryAsync(
+        IMpvOverlayBackend backend, CancellationToken ct)
+    {
+        long started = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            var signal = Volatile.Read(ref _geometryChanged).Task;
+            if (backend.TryGetGeometry(_context) is { } geometry) return geometry;
+
+            var remaining = InitialGeometryWait - Stopwatch.GetElapsedTime(started);
+            if (remaining <= TimeSpan.Zero) return null;
+
+            try
+            {
+                await signal.WaitAsync(remaining, ct);
+            }
+            catch (TimeoutException)
+            {
+                return null;
+            }
+        }
+    }
+
     /// The trackers report far more often than mpv's window actually moves, and a re-apply costs a
     /// round trip to the window manager on every platform.
-    private OverlayLogicalSize ApplyGeometry(
-        IMpvOverlayBackend backend, Window window, OverlayGeometry geometry)
+    private async ValueTask<OverlayLogicalSize> ApplyGeometryAsync(
+        IMpvOverlayBackend backend, Window window, OverlayGeometry geometry, CancellationToken ct)
     {
         double scaling = window.RenderScaling;
-        if (_appliedGeometry == geometry && _appliedScaling == scaling && _appliedSize.Height > 0)
-            return _appliedSize;
+        var decision = _lifecycle.ObserveGeometry(geometry, scaling);
+        if (!decision.Apply) return _lifecycle.AppliedSize;
 
-        _appliedSize = backend.Apply(window, geometry);
-        _appliedGeometry = geometry;
-        _appliedScaling = scaling;
-        return _appliedSize;
+        await _geometryApplyLock.WaitAsync(ct);
+        try
+        {
+            if (!_lifecycle.IsGeometryCurrent(
+                    geometry, scaling, decision.Generation))
+                return default;
+
+            var size = await backend.ApplyAsync(window, geometry, ct);
+            return _lifecycle.TryMarkApplied(
+                geometry, scaling, size, decision.Generation)
+                ? size
+                : default;
+        }
+        finally
+        {
+            _geometryApplyLock.Release();
+        }
     }
 
     private void OnBackendGeometryChanged()
     {
+        SignalGeometryChanged();
         if (!Dispatcher.UIThread.CheckAccess())
         {
-            Dispatcher.UIThread.Post(OnBackendGeometryChanged);
+            Dispatcher.UIThread.Post(() => _ = RefreshGeometryAsync());
             return;
         }
 
-        if (_window is not { } window || _backend is not { } backend) return;
-        if (backend.TryGetGeometry(_context) is not { } geometry)
-        {
-            if (!_windowFound) return;
-            _windowFound = false;
-            _control?.SetFrame(null);
-            return;
-        }
-
-        ApplyGeometry(backend, window, geometry);
-
-        if (_windowFound) return;
-        _windowFound = true;
-        AvailabilityChanged?.Invoke();
+        _ = RefreshGeometryAsync();
     }
+
+    private async Task RefreshGeometryAsync()
+    {
+        if (_window is not { } window || _backend is not { } backend) return;
+
+        var geometry = backend.TryGetGeometry(_context);
+        var decision = _lifecycle.ObserveGeometry(geometry, window.RenderScaling);
+        if (geometry is null)
+        {
+            if (decision.Hide)
+                HideFrame();
+            if (decision.NotifyAvailability)
+                AvailabilityChanged?.Invoke();
+            return;
+        }
+
+        if (decision.Apply)
+        {
+            try
+            {
+                await _geometryApplyLock.WaitAsync();
+                try
+                {
+                    if (!_lifecycle.IsGeometryCurrent(
+                            geometry.Value, window.RenderScaling,
+                            decision.Generation))
+                        return;
+
+                    var size = await backend.ApplyAsync(
+                        window, geometry.Value, CancellationToken.None);
+                    if (!_lifecycle.TryMarkApplied(
+                            geometry.Value, window.RenderScaling, size,
+                            decision.Generation))
+                        return;
+                }
+                finally
+                {
+                    _geometryApplyLock.Release();
+                }
+            }
+            catch (Exception ex)
+            {
+                Trace.TraceWarning(
+                    "Native subtitle overlay geometry refresh failed: {0}",
+                    ex.GetBaseException().Message);
+                HideFrame();
+                return;
+            }
+        }
+
+        if (decision.ReplayDesiredFrame)
+            PresentDesiredFrame();
+        if (decision.NotifyAvailability)
+            AvailabilityChanged?.Invoke();
+    }
+
+    private void PresentDesiredFrame()
+    {
+        if (_lifecycle.DesiredFrame is not { } frame
+            || _settings is not { } settings
+            || _lifecycle.AppliedSize.Height <= 0
+            || _osdWidth <= 0
+            || _osdHeight <= 0)
+            return;
+
+        if (_engine.Layout(
+                frame, settings, _osdWidth, _osdHeight,
+                _lifecycle.AppliedSize.Height) is { } laidOut)
+            Present(laidOut);
+    }
+
+    private void Present(LaidOutSubtitle frame)
+    {
+        _control!.SetFrame(frame);
+        _window!.Opacity = 1;
+    }
+
+    private void HideFrame()
+    {
+        if (_window is not null) _window.Opacity = 0;
+        _control?.SetFrame(null);
+    }
+
+    private void SignalGeometryChanged()
+    {
+        var next = NewGeometrySignal();
+        Interlocked.Exchange(ref _geometryChanged, next).TrySetResult();
+    }
+
+    private static TaskCompletionSource NewGeometrySignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private async Task TearDownAsync()
     {
-        Interlocked.Increment(ref _revision);
-        _windowFound = false;
+        _lifecycle.Clear();
         _preparedFor = null;
-        _appliedGeometry = null;
-        _appliedSize = default;
+        _lifecycle.ResetGeometry();
+        _unavailable = false;
+        SignalGeometryChanged();
 
         if (_backend is { } backend)
         {
@@ -243,7 +365,7 @@ public sealed class AvaloniaSubtitleOverlaySurface : ISubtitleOverlaySurface
             _backend = null;
         }
 
-        _control?.SetFrame(null);
+        HideFrame();
         _control?.DisposePainter();
         _control = null;
 

@@ -48,14 +48,16 @@ internal sealed class MacOsOverlayBackend : IMpvOverlayBackend
     public OverlayGeometry? TryGetGeometry(PopupWindowContext context)
         => context.ProcessId is { } processId ? Quartz.LargestWindowBounds(processId) : null;
 
-    public OverlayLogicalSize Apply(Window window, OverlayGeometry geometry)
+    public ValueTask<OverlayLogicalSize> ApplyAsync(
+        Window window, OverlayGeometry geometry, CancellationToken ct)
     {
         double scale = window.DesktopScaling > 0 ? window.DesktopScaling : 1;
         window.Position = new PixelPoint(
             (int)Math.Round(geometry.X * scale), (int)Math.Round(geometry.Y * scale));
         window.Width = geometry.Width;
         window.Height = geometry.Height;
-        return new OverlayLogicalSize(geometry.Width, geometry.Height);
+        return ValueTask.FromResult(
+            new OverlayLogicalSize(geometry.Width, geometry.Height));
     }
 
     public ValueTask DisposeAsync()

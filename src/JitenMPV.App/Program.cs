@@ -29,6 +29,8 @@ namespace JitenMPV.App;
 
 sealed class Program
 {
+    private const int MpvOwnershipMismatchExitCode = 73;
+
     [DllImport("kernel32.dll")]
     private static extern bool AttachConsole(int dwProcessId);
 
@@ -43,7 +45,7 @@ sealed class Program
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 AttachConsole(-1);
-            RunPlugin(args);
+            Environment.ExitCode = RunPlugin(args);
         }
         else if (args.Length >= 1 && args[0] is "install" or "uninstall")
         {
@@ -124,7 +126,7 @@ sealed class Program
         return null;
     }
 
-    private static void RunPlugin(string[] args)
+    private static int RunPlugin(string[] args)
     {
         Directory.CreateDirectory(SettingsManager.ConfigDir);
         using var logWriter = OpenLog(SettingsManager.ConfigDir);
@@ -158,6 +160,16 @@ sealed class Program
         };
 
         var pipePath = args[1];
+        var expectedInstanceToken = args.Length >= 4 ? args[3] : null;
+        if (!string.IsNullOrWhiteSpace(expectedInstanceToken)
+            && !OwnsMpvInstanceAsync(pipePath, expectedInstanceToken, logger)
+                .GetAwaiter().GetResult())
+        {
+            logger.LogWarning(
+                "JitenMPV IPC ownership mismatch; refusing to attach to another mpv instance");
+            return MpvOwnershipMismatchExitCode;
+        }
+
         var mpvBackend = DetectMpvBackendAsync(pipePath, logger)
             .GetAwaiter().GetResult();
 
@@ -257,6 +269,45 @@ sealed class Program
 
             lifetime.Start(startArgs);
         }, args);
+        return 0;
+    }
+
+    private static async Task<bool> OwnsMpvInstanceAsync(
+        string pipePath,
+        string expectedInstanceToken,
+        ILogger logger)
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using var ipc = new MpvIpcClient(pipePath, logger);
+
+        try
+        {
+            await ipc.ConnectAsync(cts.Token);
+            var readLoop = ipc.RunAsync(cts.Token);
+            try
+            {
+                var actual = await ipc.GetPropertyAsync<string?>(
+                    "user-data/jiten-instance-token", cts.Token);
+                return string.Equals(
+                    actual, expectedInstanceToken, StringComparison.Ordinal);
+            }
+            finally
+            {
+                await cts.CancelAsync();
+                try
+                {
+                    await readLoop;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException)
+        {
+            logger.LogDebug(ex, "Could not verify mpv IPC ownership");
+            return false;
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp(

@@ -85,8 +85,53 @@ if not is_windows then
     mpv_instance_token = mpv_instance_token .. "-" .. unique_suffix
     mpv_wayland_app_id = mp.get_property("options/wayland-app-id")
 end
+mp.set_property("user-data/jiten-instance-token", mpv_instance_token)
 
 local plugin_started = false
+local plugin_ipc_alias = nil
+local ownership_recovery_attempted = false
+
+local function private_ipc_path()
+    if is_windows then
+        return "\\\\.\\pipe\\mpv-jiten-" .. mpv_instance_token
+    end
+    return "/tmp/mpv-jiten-" .. mpv_instance_token
+end
+
+-- A caller-supplied IPC pathname can be reused by another mpv process. Unix lets the later
+-- process unlink and bind that pathname while the first listener remains alive, so a delayed
+-- Jiten child can otherwise connect to the wrong window. A per-instance hard link preserves the
+-- socket inode this Lua instance actually owns without changing the caller's control path.
+local function create_plugin_ipc_alias(ipc_path)
+    if is_windows or not ipc_path or ipc_path == "" or ipc_path:sub(1, 1) == "@" then
+        return ipc_path
+    end
+
+    local directory = ipc_path:match("^(.*)/[^/]*$") or "."
+    local alias = utils.join_path(directory, ".jiten-mpv-" .. mpv_instance_token .. ".sock")
+    os.remove(alias)
+
+    local result = utils.subprocess({
+        args = { "ln", "--", ipc_path, alias },
+        cancellable = false,
+        capture_stdout = true,
+        capture_stderr = true
+    })
+    if result.status == 0 then
+        plugin_ipc_alias = alias
+        return alias
+    end
+
+    mp.msg.warn("Could not pin JitenMPV to this mpv IPC socket: " ..
+        (result.stderr or "hard-link failed"))
+    return ipc_path
+end
+
+-- Pin a caller-supplied listener as soon as the script loads. Waiting for file-loaded leaves a
+-- window where another mpv can rebind the shared pathname before this instance records its inode.
+local startup_ipc_path = mp.get_property("input-ipc-server")
+local pinned_plugin_ipc_path = startup_ipc_path and startup_ipc_path ~= ""
+    and create_plugin_ipc_alias(startup_ipc_path) or nil
 
 -- The plugin hides mpv's own subtitles for as long as it is drawing its coloured ones. If it dies
 -- the overlay dies with it, so without this the rest of the session plays with no subtitles at all.
@@ -574,13 +619,11 @@ local function initialize()
     if plugin_started then return end
 
     local ipc_path = mp.get_property("input-ipc-server")
+    local generated_ipc_path = false
     if not ipc_path or ipc_path == "" then
-        if package.config:sub(1, 1) == "\\" then
-            ipc_path = "\\\\.\\pipe\\mpv-jiten-" .. mpv_instance_token
-        else
-            ipc_path = "/tmp/mpv-jiten-" .. mpv_instance_token
-        end
+        ipc_path = private_ipc_path()
         mp.set_property("input-ipc-server", ipc_path)
+        generated_ipc_path = true
     end
 
     plugin_started = true
@@ -593,17 +636,36 @@ local function initialize()
     end
 
     local exe = get_exe_path()
+    local plugin_ipc_path = generated_ipc_path and ipc_path
+        or pinned_plugin_ipc_path or create_plugin_ipc_alias(ipc_path)
     sub_visibility_before_plugin = mp.get_property("sub-visibility")
-    mp.msg.info("Spawning JitenMPV: " .. exe .. " plugin " .. ipc_path)
+    mp.msg.info("Spawning JitenMPV: " .. exe .. " plugin " .. plugin_ipc_path)
     -- Not detached: the exit callback is the only way to learn the plugin died, and without
     -- clearing the latch neither file-loaded nor F10 could ever respawn it.
     mp.command_native_async({
         name = "subprocess",
         playback_only = false,
-        args = { exe, "plugin", ipc_path, mpv_wayland_app_id or "" }
-    }, function()
+        args = {
+            exe, "plugin", plugin_ipc_path, mpv_wayland_app_id or "", mpv_instance_token
+        }
+    }, function(_, result)
+        if plugin_ipc_alias then
+            os.remove(plugin_ipc_alias)
+            plugin_ipc_alias = nil
+        end
         plugin_started = false
         set_plugin_client(nil)
+
+        if result and tonumber(result.status) == 73 and not ownership_recovery_attempted then
+            ownership_recovery_attempted = true
+            pinned_plugin_ipc_path = nil
+            local recovery_path = private_ipc_path()
+            mp.msg.warn("JitenMPV reached another mpv instance; retrying on " .. recovery_path)
+            mp.set_property("input-ipc-server", recovery_path)
+            mp.add_timeout(0.2, initialize)
+            return
+        end
+
         if sub_visibility_before_plugin then
             mp.set_property("sub-visibility", sub_visibility_before_plugin)
             sub_visibility_before_plugin = nil

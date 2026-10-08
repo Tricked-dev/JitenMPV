@@ -34,7 +34,8 @@ public static class SubtitleRunBuilder
                     lastEnd, token.Start - lastEnd, ThemePresets.Unparsed, -1, null));
 
             var style = styleResolver.Resolve(
-                token, entry.VocabStates, iPlusOneWords, frequencyWords, entry.PitchClasses, revealedWords);
+                token, entry.VocabStates, iPlusOneWords, frequencyWords, entry.PitchClasses, revealedWords,
+                entry.VocabDetails.TryGetValue((token.WordId, token.ReadingIndex), out var word) && word.IsLeech);
 
             if (style.Underline == true && style.UnderlineColor is { } barColor)
             {

@@ -129,6 +129,8 @@ public sealed class PluginHost(
         _settings = newSettings;
 
         _apiClient?.UpdateConnection(newSettings.ApiKey, newSettings.ApiBaseUrl, newSettings.ApiTimeoutSeconds);
+        if (_apiClient is not null)
+            _apiClient.HighlightLeeches = newSettings.Theme == ThemePresets.LeechThemeName;
 
         var theme = ResolveTheme(newSettings.Theme);
         _styleResolver.UpdateTheme(
@@ -470,6 +472,7 @@ public sealed class PluginHost(
 
         var apiClient = new JitenApiClient(
             settings.ApiKey, settings.ApiBaseUrl, settings.ApiTimeoutSeconds, logger);
+        apiClient.HighlightLeeches = settings.Theme == ThemePresets.LeechThemeName;
         _apiClient = apiClient;
         var parseCache = new ParseCache(settings.CacheSize);
 

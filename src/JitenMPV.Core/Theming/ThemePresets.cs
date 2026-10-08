@@ -45,6 +45,22 @@ public static class ThemePresets
             [KnownState.Redundant] = DimmedStyle
         });
 
+    public const string LeechThemeName = "Default + Leeches";
+
+    public static WordStyleState Leech { get; } = new()
+    {
+        ShadowColor = "#ffff00", ShadowDepth = IPlusOne.ShadowDepth
+    };
+
+    public static IReadOnlyDictionary<KnownState, WordStyleState> DefaultWithLeeches { get; } =
+        new Dictionary<KnownState, WordStyleState>(Default)
+        {
+            [KnownState.Suspended] = new()
+            {
+                TextColor = "#eeeeee", OutlineColor = "#b89bce", OutlineSize = 3
+            }
+        };
+
     public static IReadOnlyDictionary<KnownState, WordStyleState> HighContrast { get; } =
         WithSuspended(new Dictionary<KnownState, WordStyleState>
         {
@@ -123,6 +139,7 @@ public static class ThemePresets
         new Dictionary<string, IReadOnlyDictionary<KnownState, WordStyleState>>
         {
             ["Default"] = Default,
+            [LeechThemeName] = DefaultWithLeeches,
             ["High Contrast"] = HighContrast,
             ["Monochrome"] = Monochrome,
             ["Subtle"] = Subtle,

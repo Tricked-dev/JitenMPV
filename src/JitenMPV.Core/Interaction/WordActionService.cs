@@ -27,6 +27,7 @@ public sealed class WordActionService(
             if (!response.Success) return false;
 
             cache.UpdateWordState(wordId, readingIndex, newState);
+            api.InvalidateLeeches();
 
             var entry = cache.GetOrDefault(subtitleText);
             var spelling = entry?.VocabDetails.GetValueOrDefault((wordId, readingIndex))?.Spelling ?? "word";

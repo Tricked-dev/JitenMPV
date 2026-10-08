@@ -29,6 +29,8 @@ public sealed class InlineReviewService(
                     FsrsStateMapper.ToKnownState(newState, response.NextDue, DateTimeOffset.UtcNow));
             }
 
+            api.InvalidateLeeches();
+
             var label = rating >= 1 && rating < RatingLabels.Length ? RatingLabels[rating] : rating.ToString();
             await status.ShowAsync(ipc, $"Reviewed: {label}", 1500, ct);
 

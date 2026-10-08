@@ -71,7 +71,8 @@ public sealed class StyleResolver
         HashSet<(int WordId, byte ReadingIndex)>? iPlusOneWords = null,
         HashSet<(int WordId, byte ReadingIndex)>? frequencyWords = null,
         IReadOnlyDictionary<(int WordId, byte ReadingIndex), PitchClass>? pitchClasses = null,
-        HashSet<(int WordId, byte ReadingIndex)>? revealedWords = null)
+        HashSet<(int WordId, byte ReadingIndex)>? revealedWords = null,
+        bool isLeech = false)
     {
         var snap = _snapshot;
         var key = (token.WordId, token.ReadingIndex);
@@ -93,6 +94,9 @@ public sealed class StyleResolver
 
         if (snap.FrequencyOverride is not null && frequencyWords?.Contains(key) == true)
             style = snap.FrequencyOverride.MergeOver(style);
+
+        if (isLeech && state == KnownState.Suspended)
+            style = ThemePresets.Leech.MergeOver(style);
 
         // Applied last and skipped for revealed words, so a reveal restores the untouched style
         // instead of leaving the blur's stripped outline behind.

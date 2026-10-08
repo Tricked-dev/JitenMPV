@@ -525,7 +525,7 @@ public partial class SettingsViewModel : ViewModelBase
 
     public ObservableCollection<string> AvailableThemes { get; } =
     [
-        "Default", "High Contrast", "Monochrome", "Subtle", "Underline", "Toy Box", "Custom"
+        "Default", ThemePresets.LeechThemeName, "High Contrast", "Monochrome", "Subtle", "Underline", "Toy Box", "Custom"
     ];
 
     /// Installed families only. Offering fonts that are absent is what made the family setting look

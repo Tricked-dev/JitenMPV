@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace JitenMPV.Core.Api;
 
-public sealed class JitenApiClient
+public sealed partial class JitenApiClient
 {
     // DTOs carry explicit [JsonPropertyName] (camelCase), so no naming policy is needed here.
     private static readonly JsonSerializerOptions JsonOptions = new();
@@ -49,6 +49,11 @@ public sealed class JitenApiClient
 
     public void UpdateConnection(string? apiKey, string baseUrl, int timeoutSeconds)
     {
+        if (_apiKey != apiKey || _http.BaseAddress != new Uri(baseUrl))
+        {
+            _leeches = [];
+            _leechRefreshAt = DateTimeOffset.MinValue;
+        }
         _apiKey = apiKey;
         if (_rejectedApiKey != apiKey)
             _rejectedApiKey = null;

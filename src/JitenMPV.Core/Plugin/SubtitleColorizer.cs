@@ -35,7 +35,7 @@ public sealed class SubtitleColorizer(
     /// Renders from a parse that already happened, without hitting the dictionary again. Used to
     /// colour a text whose line breaks were inserted after the parse (wrapped subtitles): the same
     /// tokens describe both texts, and re-parsing would split the words the breaks cut across.
-    public Task<ColorizedSubtitle> ColorizeWithParsedEntryAsync(
+    public async Task<ColorizedSubtitle> ColorizeWithParsedEntryAsync(
         string subtitleText, ParseCacheEntry entry,
         HashSet<(int WordId, byte ReadingIndex)>? revealedWords,
         bool suppressWrap,
@@ -49,18 +49,20 @@ public sealed class SubtitleColorizer(
             // entirely new word ids, or to nothing, and clicks land on hitboxes with no popup.
             cache.Set(subtitleText, entry);
 
+            await api.ApplyLeechStatusAsync(entry.VocabDetails.Values, ct);
+
             var det = _detectors;
             var iPlusOne = det.IPlusOne?.Detect(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);
             var freqWords = det.Frequency?.Mark(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);
 
             var (ass, underlines, runs) = renderer.RenderSubtitle(
                 subtitleText, entry, iPlusOne, freqWords, revealedWords, suppressWrap);
-            return Task.FromResult(new ColorizedSubtitle(ass, entry, underlines, runs));
+            return new ColorizedSubtitle(ass, entry, underlines, runs);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex, "Failed to colour subtitle from existing parse, falling back to plain rendering");
-            return Task.FromResult(Plain(subtitleText, suppressWrap));
+            return Plain(subtitleText, suppressWrap);
         }
     }
 
@@ -88,6 +90,8 @@ public sealed class SubtitleColorizer(
                 entry = ParseCacheEntry.From(parseResponse);
                 cache.Set(subtitleText, entry);
             }
+
+            await api.ApplyLeechStatusAsync(entry.VocabDetails.Values, ct);
 
             var det = _detectors;
             var iPlusOne = det.IPlusOne?.Detect(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);

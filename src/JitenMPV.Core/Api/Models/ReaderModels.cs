@@ -70,6 +70,9 @@ public sealed class ReaderWord
     [JsonPropertyName("pitchAccents")]
     public List<int> PitchAccents { get; set; } = [];
 
+    [JsonPropertyName("isLeech")]
+    public bool IsLeech { get; set; }
+
     [JsonPropertyName("studyDeckIds")]
     public List<int> StudyDeckIds { get; set; } = [];
 }

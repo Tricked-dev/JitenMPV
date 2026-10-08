@@ -239,7 +239,7 @@ public partial class PopupViewModel : ViewModelBase
 
         MasterLabel = data.IsNeverForgotten ? "Un-master" : "Master";
         BlacklistLabel = data.IsBlacklisted ? "Un-blacklist" : "Blacklist";
-        SuspendLabel = data.IsSuspended ? "Resume" : "Suspend";
+        SuspendLabel = data.IsSuspended ? "Unsuspend" : "Suspend";
 
         ShowMine = data.ShowMine;
         IsMined = data.IsMined;

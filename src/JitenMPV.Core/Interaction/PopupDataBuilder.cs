@@ -81,7 +81,8 @@ public sealed class PopupDataBuilder(PluginSettings settings, MiningService mini
 
             ShowNeverForget = actionable && settings.PopupShowStateActions && settings.PopupShowNeverForget,
             ShowBlacklist = actionable && settings.PopupShowStateActions && settings.PopupShowBlacklist,
-            ShowSuspend = actionable && settings.PopupShowStateActions && settings.PopupShowSuspend,
+            // Always offer recovery for suspended words, even when adding state actions is hidden.
+            ShowSuspend = actionable && (isSuspended || (settings.PopupShowStateActions && settings.PopupShowSuspend)),
             ShowForget = actionable && settings.PopupShowStateActions && settings.PopupShowForget && hasCard,
             IsNeverForgotten = isMastered,
             IsBlacklisted = isBlacklisted,

@@ -1047,6 +1047,8 @@
                 <CheckBox Content="Suspend" IsChecked="{Binding PopupShowSuspend}" />
                 <CheckBox Content="Forget" IsChecked="{Binding PopupShowForget}" />
               </StackPanel>
+              <TextBlock Text="Suspended words always show an Unsuspend button."
+                         Foreground="#a1a1aa" FontSize="12" TextWrapping="Wrap" />
               <StackPanel IsVisible="{Binding PopupShowPitch}" Margin="24,0,0,0">
                 <CheckBox Content="Draw pitch accent diagrams instead of numbers"
                           IsChecked="{Binding PopupPitchDiagram}" />

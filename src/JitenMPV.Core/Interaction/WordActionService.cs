@@ -59,7 +59,7 @@ public sealed class WordActionService(
             PopupAction.Blacklist =>
                 (VocabularyStateActions.BlacklistAdd, KnownState.Blacklisted, "Blacklisted"),
             PopupAction.Suspend when currentState == KnownState.Suspended =>
-                (VocabularyStateActions.SuspendRemove, KnownState.New, "Unsuspended"),
+                (VocabularyStateActions.SuspendRemove, KnownState.New, "Resumed"),
             PopupAction.Suspend =>
                 (VocabularyStateActions.SuspendAdd, KnownState.Suspended, "Suspended"),
             PopupAction.Forget =>

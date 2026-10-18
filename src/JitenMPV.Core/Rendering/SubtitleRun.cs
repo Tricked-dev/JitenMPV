@@ -20,7 +20,8 @@ public static class SubtitleRunBuilder
         StyleResolver styleResolver,
         HashSet<(int WordId, byte ReadingIndex)>? iPlusOneWords,
         HashSet<(int WordId, byte ReadingIndex)>? frequencyWords,
-        HashSet<(int WordId, byte ReadingIndex)>? revealedWords)
+        HashSet<(int WordId, byte ReadingIndex)>? revealedWords,
+        HashSet<(int WordId, byte ReadingIndex)>? leechWords = null)
     {
         var runs = new List<SubtitleRun>(entry.Tokens.Count * 2 + 1);
         Dictionary<(int WordId, byte ReadingIndex), UnderlineBar>? underlines = null;
@@ -34,7 +35,8 @@ public static class SubtitleRunBuilder
                     lastEnd, token.Start - lastEnd, ThemePresets.Unparsed, -1, null));
 
             var style = styleResolver.Resolve(
-                token, entry.VocabStates, iPlusOneWords, frequencyWords, entry.PitchClasses, revealedWords);
+                token, entry.VocabStates, iPlusOneWords, frequencyWords, entry.PitchClasses, revealedWords,
+                leechWords);
 
             if (style.Underline == true && style.UnderlineColor is { } barColor)
             {

@@ -12,7 +12,8 @@ public sealed class StyleResolver
         WordStyleState? FrequencyOverride,
         IReadOnlyDictionary<PitchClass, WordStyleState>? PitchStyles,
         HashSet<KnownState>? BlurStates,
-        WordStyleState? BlurOnStyle);
+        WordStyleState? BlurOnStyle,
+        WordStyleState? LeechOverride);
 
     private readonly WordStyleState _unparsed;
     private volatile ThemeSnapshot _snapshot;
@@ -24,10 +25,12 @@ public sealed class StyleResolver
         WordStyleState? frequencyOverride = null,
         HashSet<KnownState>? blurStates = null,
         double blurStrength = 0,
-        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles = null)
+        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles = null,
+        WordStyleState? leechOverride = null)
     {
         _unparsed = unparsed;
-        _snapshot = BuildSnapshot(theme, iPlusOneOverride, frequencyOverride, blurStates, blurStrength, pitchStyles);
+        _snapshot = BuildSnapshot(
+            theme, iPlusOneOverride, frequencyOverride, blurStates, blurStrength, pitchStyles, leechOverride);
     }
 
     public void UpdateTheme(
@@ -36,9 +39,11 @@ public sealed class StyleResolver
         WordStyleState? newFrequencyOverride,
         HashSet<KnownState>? blurStates = null,
         double blurStrength = 0,
-        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles = null)
+        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles = null,
+        WordStyleState? newLeechOverride = null)
     {
-        _snapshot = BuildSnapshot(newTheme, newIPlusOneOverride, newFrequencyOverride, blurStates, blurStrength, pitchStyles);
+        _snapshot = BuildSnapshot(
+            newTheme, newIPlusOneOverride, newFrequencyOverride, blurStates, blurStrength, pitchStyles, newLeechOverride);
     }
 
     private static ThemeSnapshot BuildSnapshot(
@@ -47,7 +52,8 @@ public sealed class StyleResolver
         WordStyleState? frequencyOverride,
         HashSet<KnownState>? blurStates,
         double blurStrength,
-        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles)
+        IReadOnlyDictionary<PitchClass, WordStyleState>? pitchStyles,
+        WordStyleState? leechOverride)
     {
         // libass blurs the border bitmap whenever one exists and leaves the fill sharp, so the
         // outline and shadow have to go for \blur to reach the glyph itself. Underlining is dropped
@@ -55,7 +61,7 @@ public sealed class StyleResolver
         var blurOn = blurStates is not null
             ? new WordStyleState { Blur = blurStrength, OutlineSize = 0, ShadowDepth = 0, Underline = false }
             : null;
-        return new ThemeSnapshot(theme, iPlusOneOverride, frequencyOverride, pitchStyles, blurStates, blurOn);
+        return new ThemeSnapshot(theme, iPlusOneOverride, frequencyOverride, pitchStyles, blurStates, blurOn, leechOverride);
     }
 
     public static HashSet<KnownState>? BuildBlurStates(PluginSettings settings)
@@ -71,7 +77,8 @@ public sealed class StyleResolver
         HashSet<(int WordId, byte ReadingIndex)>? iPlusOneWords = null,
         HashSet<(int WordId, byte ReadingIndex)>? frequencyWords = null,
         IReadOnlyDictionary<(int WordId, byte ReadingIndex), PitchClass>? pitchClasses = null,
-        HashSet<(int WordId, byte ReadingIndex)>? revealedWords = null)
+        HashSet<(int WordId, byte ReadingIndex)>? revealedWords = null,
+        HashSet<(int WordId, byte ReadingIndex)>? leechWords = null)
     {
         var snap = _snapshot;
         var key = (token.WordId, token.ReadingIndex);
@@ -87,6 +94,9 @@ public sealed class StyleResolver
         {
             style = pitchStyle.MergeOver(style);
         }
+
+        if (snap.LeechOverride is not null && leechWords?.Contains(key) == true)
+            style = snap.LeechOverride.MergeOver(style);
 
         if (snap.IPlusOneOverride is not null && iPlusOneWords?.Contains(key) == true)
             style = snap.IPlusOneOverride.MergeOver(style);

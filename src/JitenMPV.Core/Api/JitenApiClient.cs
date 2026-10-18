@@ -211,6 +211,12 @@ public sealed class JitenApiClient
     public Task<JitenPlusStatusResponse?> GetJitenPlusStatusAsync(CancellationToken ct)
         => GetAsync<JitenPlusStatusResponse>("/api/jiten-plus/status", "JitenPlusStatus", ct);
 
+    public async Task<List<VocabularyCard>> GetVocabularyCardsAsync(CancellationToken ct)
+        => await GetAsync<List<VocabularyCard>>("/api/user/vocabulary/cards", "VocabularyCards", ct) ?? [];
+
+    public Task<StudySettings?> GetStudySettingsAsync(CancellationToken ct)
+        => GetAsync<StudySettings>("/api/srs/study-settings", "StudySettings", ct);
+
     public async Task<CardMediaEntry?> GetCardMediaAsync(int wordId, byte readingIndex, CancellationToken ct)
     {
         var request = new CardMediaBatchRequest

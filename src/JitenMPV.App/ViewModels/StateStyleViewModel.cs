@@ -1,6 +1,5 @@
 using System;
 using CommunityToolkit.Mvvm.ComponentModel;
-using JitenMPV.Core.Api.Models;
 using JitenMPV.Core.Config;
 using JitenMPV.Core.Rendering;
 using JitenMPV.Core.Theming;
@@ -9,7 +8,6 @@ namespace JitenMPV.App.ViewModels;
 
 public partial class StateStyleViewModel : ViewModelBase
 {
-    public KnownState State { get; }
     public string DisplayName { get; }
 
     [ObservableProperty] private string _textColor = "#ffffff";
@@ -32,20 +30,34 @@ public partial class StateStyleViewModel : ViewModelBase
 
     [ObservableProperty] private string _swatchColor = "#ffffff";
 
-    public StateStyleViewModel(KnownState state)
+    /// Kept so an untouched style saves what it was opened with: the percent slider cannot hold
+    /// every 0-255 opacity, and a plain underline would otherwise come back as a coloured bar.
+    private int? _loadedTextOpacity;
+    private bool _underlineFollowsText;
+
+    public StateStyleViewModel(string name)
     {
-        State = state;
-        DisplayName = state.ToString();
+        DisplayName = name;
     }
 
     partial void OnTextColorChanged(string value)
-        => SwatchColor = value;
+    {
+        SwatchColor = value;
+        if (_underlineFollowsText)
+            UnderlineColor = value;
+    }
+
+    partial void OnUnderlineColorChanged(string value)
+        => _underlineFollowsText &= string.Equals(value, TextColor, StringComparison.OrdinalIgnoreCase);
 
     public CustomStateStyle ToCustomStateStyle()
     {
-        var opacity = TextOpacityPercent < 100
-            ? (int?)Math.Round(TextOpacityPercent * 255.0 / 100)
-            : null;
+        var opacity = _loadedTextOpacity is { } loaded && ToPercent(loaded) == TextOpacityPercent
+            ? loaded
+            : TextOpacityPercent < 100
+                ? (int?)Math.Round(TextOpacityPercent * 255.0 / 100)
+                : null;
+        var plainUnderline = !Underline || _underlineFollowsText;
 
         return new CustomStateStyle
         {
@@ -58,15 +70,17 @@ public partial class StateStyleViewModel : ViewModelBase
             Bold = Bold,
             Italic = Italic,
             Underline = Underline,
-            UnderlineColor = Underline ? UnderlineColor : null,
-            UnderlineThickness = Underline ? UnderlineThickness : null,
+            UnderlineColor = plainUnderline ? null : UnderlineColor,
+            UnderlineThickness = plainUnderline ? null : UnderlineThickness,
             Strikethrough = Strikethrough,
         };
     }
 
-    public static StateStyleViewModel FromCustomStateStyle(KnownState state, CustomStateStyle css)
+    private static int ToPercent(int opacity) => (int)Math.Round(opacity * 100.0 / 255);
+
+    public static StateStyleViewModel FromCustomStateStyle(string name, CustomStateStyle css)
     {
-        var vm = new StateStyleViewModel(state)
+        var vm = new StateStyleViewModel(name)
         {
             TextColor = css.TextColor,
             OutlineColor = css.OutlineColor,
@@ -74,9 +88,7 @@ public partial class StateStyleViewModel : ViewModelBase
             HasShadow = css.ShadowColor is not null,
             OutlineSize = css.OutlineSize,
             ShadowDepth = css.ShadowDepth ?? 1,
-            TextOpacityPercent = css.TextOpacity is { } op
-                ? (int)Math.Round(op * 100.0 / 255)
-                : 100,
+            TextOpacityPercent = css.TextOpacity is { } op ? ToPercent(op) : 100,
             Bold = css.Bold,
             Italic = css.Italic,
             Underline = css.Underline,
@@ -87,9 +99,11 @@ public partial class StateStyleViewModel : ViewModelBase
             Strikethrough = css.Strikethrough,
         };
         vm.SwatchColor = vm.TextColor;
+        vm._loadedTextOpacity = css.TextOpacity;
+        vm._underlineFollowsText = css.UnderlineColor is null;
         return vm;
     }
 
-    public static StateStyleViewModel FromWordStyleState(KnownState state, WordStyleState ws)
-        => FromCustomStateStyle(state, CustomStateStyle.FromWordStyleState(ws));
+    public static StateStyleViewModel FromWordStyleState(string name, WordStyleState ws)
+        => FromCustomStateStyle(name, CustomStateStyle.FromWordStyleState(ws));
 }

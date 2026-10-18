@@ -63,6 +63,20 @@ public sealed class CustomStateStyle
         Strikethrough = Strikethrough,
     };
 
+    /// Overlays are merged over the word's own style, so only the marks that are switched on are
+    /// carried and the text and outline colours stay the theme's.
+    public WordStyleState ToOverlayStyle() => new()
+    {
+        ShadowColor = ShadowColor,
+        ShadowDepth = ShadowColor is not null ? ShadowDepth : null,
+        Bold = Bold ? true : null,
+        Italic = Italic ? true : null,
+        Underline = Underline ? true : null,
+        UnderlineColor = Underline ? UnderlineColor : null,
+        UnderlineThickness = Underline ? UnderlineThickness : null,
+        Strikethrough = Strikethrough ? true : null,
+    };
+
     public static CustomStateStyle FromWordStyleState(WordStyleState ws) => new()
     {
         TextColor = ws.TextColor ?? "#ffffff",

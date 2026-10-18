@@ -93,6 +93,32 @@ public sealed class BatchReviewResponse
     public List<BatchReviewResultItem> Results { get; set; } = [];
 }
 
+public sealed class VocabularyCard
+{
+    [JsonPropertyName("wordId")]
+    public int WordId { get; set; }
+
+    [JsonPropertyName("readingIndex")]
+    public byte ReadingIndex { get; set; }
+
+    [JsonPropertyName("state")]
+    public FsrsState State { get; set; }
+
+    /// Already converted to days by the server, whichever FSRS version scheduled the card.
+    [JsonPropertyName("stability")]
+    public double? Stability { get; set; }
+
+    [JsonPropertyName("lapses")]
+    public int Lapses { get; set; }
+}
+
+public sealed class StudySettings
+{
+    /// Zero turns leech detection off.
+    [JsonPropertyName("leechThreshold")]
+    public int LeechThreshold { get; set; } = 8;
+}
+
 public static class VocabularyStateActions
 {
     public const string NeverForgetAdd = "neverForget-add";

@@ -286,6 +286,10 @@ public sealed class PluginSettings
     [JsonPropertyName("keybind_loop_sub")]
     public string KeybindLoopSub { get; set; } = "Ctrl+l";
 
+    /// Switches the main subtitle track to English and back.
+    [JsonPropertyName("keybind_english_toggle")]
+    public string KeybindEnglishToggle { get; set; } = "Alt+x";
+
     /// Colours subtitle words by pitch class instead of leaving the SRS colour alone.
     [JsonPropertyName("pitch_coloring_enabled")]
     public bool PitchColoringEnabled { get; set; }

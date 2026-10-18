@@ -188,6 +188,7 @@ end
 local nav_step
 local open_episode_picker
 local jimaku_action
+local english_toggle
 
 local nav_actions = {
     prev_sub = function() nav_step(-1) end,
@@ -196,12 +197,13 @@ local nav_actions = {
     episode_picker = function() open_episode_picker() end,
     jimaku_search = function() jimaku_action("search") end,
     jimaku_next = function() jimaku_action("next") end,
-    jimaku_prev = function() jimaku_action("prev") end
+    jimaku_prev = function() jimaku_action("prev") end,
+    english_toggle = function() english_toggle() end
 }
 
 local nav_keys = {
     prev_sub = "Ctrl+LEFT", next_sub = "Ctrl+RIGHT", loop_sub = "Ctrl+l", episode_picker = "",
-    jimaku_search = "", jimaku_next = "", jimaku_prev = ""
+    jimaku_search = "", jimaku_next = "", jimaku_prev = "", english_toggle = "Alt+x"
 }
 
 -- Held so the nav keys can be claimed only while a plugin is connected: bound at script load they
@@ -271,6 +273,10 @@ end
 
 function jimaku_action(action)
     if bar.client then mp.commandv("script-message-to", bar.client, "jiten-jimaku", action) end
+end
+
+function english_toggle()
+    if bar.client then mp.commandv("script-message-to", bar.client, "jiten-toggle-english") end
 end
 
 -- Every button requires a connected plugin, identified by the IPC client name it reports. Subtitle

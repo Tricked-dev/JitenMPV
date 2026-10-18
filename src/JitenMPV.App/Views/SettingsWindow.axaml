@@ -559,6 +559,11 @@
                         IsChecked="{Binding SubtitleSingleLine}" />
               <TextBlock Text="Removes the line breaks the subtitle file put in. Lines too long to fit the screen keep their own breaks."
                          FontSize="12" Foreground="#71717a" TextWrapping="Wrap" />
+
+              <CheckBox Content="Convert half-width katakana to full-width"
+                        IsChecked="{Binding ConvertHalfWidthKatakana}" />
+              <TextBlock Text="Shows ｶﾀｶﾅ as カタカナ so those lines are parsed, coloured and mined like any other."
+                         FontSize="12" Foreground="#71717a" TextWrapping="Wrap" />
             </StackPanel>
           </StackPanel>
 

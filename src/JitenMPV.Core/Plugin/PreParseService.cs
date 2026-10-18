@@ -19,6 +19,10 @@ public sealed class PreParseService(
 {
     private static readonly TimeSpan ExtractTimeout = TimeSpan.FromMinutes(2);
 
+    private volatile PluginSettings? _settings = settings;
+
+    public void UpdateSettings(PluginSettings newSettings) => _settings = newSettings;
+
     /// <param name="parseTexts">False loads the cue timeline without the API batch parse, which is
     /// what subtitle navigation needs when pre-parsing itself is switched off.</param>
     public async Task PreParseFileAsync(string subtitleFilePath, bool parseTexts, CancellationToken ct)
@@ -28,7 +32,7 @@ public sealed class PreParseService(
         List<SubtitleCue> cues;
         try
         {
-            cues = SubtitleParser.ParseFile(subtitleFilePath);
+            cues = SubtitleTextNormalizer.ApplyAll(SubtitleParser.ParseFile(subtitleFilePath), _settings);
         }
         catch (Exception ex)
         {
@@ -65,7 +69,7 @@ public sealed class PreParseService(
 
     private async Task<List<string>?> TryFfmpegExtract(MpvIpcClient ipc, CancellationToken ct)
     {
-        var ffmpeg = (await FfmpegLocator.ResolveAsync(settings?.FfmpegPath, ct))?.ExecutablePath;
+        var ffmpeg = (await FfmpegLocator.ResolveAsync(_settings?.FfmpegPath, ct))?.ExecutablePath;
         if (ffmpeg is null)
         {
             logger.LogInformation("ffmpeg not available, skipping embedded subtitle extraction");
@@ -113,7 +117,7 @@ public sealed class PreParseService(
                 return null;
             }
 
-            var cues = SrtParser.Parse(srtOutput);
+            var cues = SubtitleTextNormalizer.ApplyAll(SrtParser.Parse(srtOutput), _settings);
             logger.LogInformation("Extracted {Count} subtitle cues via ffmpeg", cues.Count);
             timeline?.Load(cues);
             return ExtractUniqueTexts(cues);
@@ -132,7 +136,7 @@ public sealed class PreParseService(
     {
         var texts = cues.Select(c => c.Text);
 
-        if (settings?.SubtitleSingleLine == true)
+        if (_settings?.SubtitleSingleLine == true)
             texts = texts.SelectMany(t => new[] { t, SubtitleLineJoiner.Join(t) });
 
         return texts

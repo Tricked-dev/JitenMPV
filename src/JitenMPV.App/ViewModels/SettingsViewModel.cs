@@ -63,6 +63,7 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private int _subtitleMarginX;
     [ObservableProperty] private int _subtitleMarginY;
     [ObservableProperty] private bool _subtitleSingleLine;
+    [ObservableProperty] private bool _convertHalfWidthKatakana;
 
     [ObservableProperty] private bool _iPlusOneEnabled;
     [ObservableProperty] private int _iPlusOneMinTokens;
@@ -607,6 +608,7 @@ public partial class SettingsViewModel : ViewModelBase
         SubtitleMarginX = s.SubtitleMarginX;
         SubtitleMarginY = s.SubtitleMarginY;
         SubtitleSingleLine = s.SubtitleSingleLine;
+        ConvertHalfWidthKatakana = s.ConvertHalfWidthKatakana;
         IPlusOneEnabled = s.IPlusOneEnabled;
         IPlusOneMinTokens = s.IPlusOneMinTokens;
         IPlusOneMaxFrequencyRank = s.IPlusOneMaxFrequencyRank;
@@ -827,6 +829,7 @@ public partial class SettingsViewModel : ViewModelBase
             SubtitleMarginX = SubtitleMarginX,
             SubtitleMarginY = SubtitleMarginY,
             SubtitleSingleLine = SubtitleSingleLine,
+            ConvertHalfWidthKatakana = ConvertHalfWidthKatakana,
             IPlusOneEnabled = IPlusOneEnabled,
             IPlusOneMinTokens = IPlusOneMinTokens,
             IPlusOneMaxFrequencyRank = IPlusOneMaxFrequencyRank,
@@ -1519,6 +1522,7 @@ public partial class SettingsViewModel : ViewModelBase
                 SubtitleMarginX = defaults.SubtitleMarginX;
                 SubtitleMarginY = defaults.SubtitleMarginY;
                 SubtitleSingleLine = defaults.SubtitleSingleLine;
+                ConvertHalfWidthKatakana = defaults.ConvertHalfWidthKatakana;
                 CustomStateStyles.Clear();
                 break;
             case 2:

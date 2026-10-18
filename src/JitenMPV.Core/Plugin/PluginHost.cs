@@ -94,9 +94,15 @@ public sealed class PluginHost(
     private string? _mpvWaylandAppId = mpvAppId;
     private string? _mpvWindowTitle;
 
-    /// The line as mpv gave it, kept so the joined form can be recomputed when a setting that
-    /// decides whether it fits changes under a subtitle already on screen.
+    /// The line as mpv gave it (after SubtitleTextNormalizer), kept so the joined form can be
+    /// recomputed when a setting that decides whether it fits changes under a subtitle on screen.
     private volatile string? _currentSubtitleRaw;
+
+    /// mpv's sub-text before SubtitleTextNormalizer, so switching the conversion setting can
+    /// recompute the line already on screen.
+    private volatile string? _mpvSubtitleText;
+    private volatile PreParseService? _preParser;
+    private Action? _reloadSubtitleSource;
 
     public event Action? OpenSettingsRequested;
 
@@ -161,6 +167,7 @@ public sealed class PluginHost(
         _mediaCapture?.UpdateSettings(newSettings);
         _episodeTracker?.UpdateSettings(newSettings);
         _jimaku?.UpdateSettings(newSettings);
+        _preParser?.UpdateSettings(newSettings);
 
         bool rendererSwitched =
             previous?.ExperimentalAvaloniaRenderer != newSettings.ExperimentalAvaloniaRenderer;
@@ -211,6 +218,21 @@ public sealed class PluginHost(
                 newSettings.SettingsButtonEnabled ? "1" : "0",
                 newSettings.SubtitleNavButtonsEnabled ? "1" : "0", CancellationToken.None));
             _ = RunSafe(() => SendNavKeysAsync(ipc, newSettings, CancellationToken.None));
+
+            // The two forms are different cache keys and cues, so reload rather than re-lay out.
+            if (previous?.ConvertHalfWidthKatakana != newSettings.ConvertHalfWidthKatakana)
+            {
+                _reloadSubtitleSource?.Invoke();
+                var converted = SubtitleTextNormalizer.Apply(_mpvSubtitleText, newSettings);
+                if (converted != _currentSubtitleRaw)
+                {
+                    _currentSubtitleRaw = converted;
+                    _currentSubtitleText = converted;
+                    if (_measurer is { } m && _interactionHandler is { } i && _lineJoiner is { } j)
+                        QueueSubtitleRender(converted, ipc, _colorizer, m, i, j, CancellationToken.None);
+                    return;
+                }
+            }
 
             var raw = _currentSubtitleRaw;
             if (_subtitlesVisible && !string.IsNullOrWhiteSpace(raw))
@@ -503,6 +525,7 @@ public sealed class PluginHost(
         var timeline = new SubtitleTimeline();
         var preParser = new PreParseService(
             apiClient, parseCache, logger, settings.PreparseBatchSize, timeline, settings);
+        _preParser = preParser;
         var measurer = new SubtitleMeasurer(settings, osd);
         _measurer = measurer;
         var lineJoiner = new SubtitleLineJoiner(settings, osd);
@@ -639,8 +662,10 @@ public sealed class PluginHost(
                         warning, NoticeDurationMs, ct));
             };
 
-            ipcClient.SubtitleTextChanged += text =>
+            ipcClient.SubtitleTextChanged += mpvText =>
             {
+                _mpvSubtitleText = mpvText;
+                var text = SubtitleTextNormalizer.Apply(mpvText, _settings);
                 _currentSubtitleRaw = text;
                 _currentSubtitleText = text;
                 QueueSubtitleRender(text, ipcClient, colorizer,
@@ -725,6 +750,7 @@ public sealed class PluginHost(
 
             // Tracked whether or not pre-parsing is on: the cue timeline it builds is also what
             // subtitle navigation steps through, and that has to work either way.
+            _reloadSubtitleSource = () => ReloadSubtitleSource(ipcClient, preParser, timeline, ct);
             ipcClient.PropertyChanged += (name, _) =>
             {
                 if (name is "sid" or "path")

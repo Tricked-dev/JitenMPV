@@ -31,6 +31,7 @@ public sealed class PluginHost(
     internal const string OpenSettingsMessage = "jiten-open-settings";
     internal const string ToggleSubtitlesMessage = "jiten-toggle-subtitles";
     internal const string NavigateSubtitleMessage = "jiten-nav-sub";
+    internal const string ToggleEnglishMessage = "jiten-toggle-english";
     private const string LuaScriptName = "jiten_mpv";
 
     /// mpv reports the new track before it has finished loading it, and a file change fires several
@@ -65,6 +66,8 @@ public sealed class PluginHost(
     private volatile bool _wasPausedBeforeSettings;
     private volatile bool _subtitlesVisible = true;
     private readonly SemaphoreSlim _subtitleVisibilityLock = new(1, 1);
+    private readonly SubtitleTrackToggle _trackToggle = new();
+    private readonly SemaphoreSlim _trackToggleLock = new(1, 1);
 
     private volatile bool _shuttingDown;
     private volatile string? _currentSubtitleText;
@@ -721,6 +724,10 @@ public sealed class PluginHost(
                     if (int.TryParse(args[0], out var delta))
                         _ = RunSafe(() => NavigateSubtitleAsync(ipcClient, timeline, delta, ct));
                 }
+                else if (name == ToggleEnglishMessage)
+                {
+                    _ = RunSafe(() => ToggleEnglishAsync(ipcClient, statusOverlay, ct));
+                }
                 else if (name == "jiten-keybind-action" && args.Length >= 1)
                 {
                     if (Enum.TryParse<PopupAction>(args[0], out var action))
@@ -843,6 +850,7 @@ public sealed class PluginHost(
             plusService.Dispose();
             TaskHelper.CancelAndDispose(ref _currentSubtitleCts);
             _subtitleVisibilityLock.Dispose();
+            _trackToggleLock.Dispose();
         }
     }
 
@@ -956,6 +964,47 @@ public sealed class PluginHost(
             "next_sub", settings.KeybindNextSub, ct);
         await ipc.SendScriptMessageAsync(LuaScriptName, "jiten-set-nav-key",
             "loop_sub", settings.KeybindLoopSub, ct);
+        await ipc.SendScriptMessageAsync(LuaScriptName, "jiten-set-nav-key",
+            "english_toggle", settings.KeybindEnglishToggle, ct);
+    }
+
+    private async Task ToggleEnglishAsync(
+        MpvIpcClient ipc, StatusOverlay statusOverlay, CancellationToken ct)
+    {
+        await _trackToggleLock.WaitAsync(ct);
+        try
+        {
+            var tracks = await ipc.GetPropertyRawAsync("track-list", ct);
+            if (SubtitleTrackToggle.PickEnglish(tracks) is not { } english)
+            {
+                await statusOverlay.ShowAsync(ipc, "No English subtitle track", 2000, ct);
+                return;
+            }
+
+            var path = await ipc.GetPropertyAsync<string?>("path", ct);
+            // mpv reports no track as false rather than as a number.
+            var sid = await ipc.GetPropertyRawAsync("sid", ct) is { ValueKind: JsonValueKind.Number } sidValue
+                ? sidValue.GetInt32()
+                : (int?)null;
+            var delay = await ipc.GetPropertyAsync<double?>("sub-delay", ct) ?? 0;
+            if (_trackToggle.Next(path, sid, delay, english, SubtitleTrackToggle.PickJapanese(tracks))
+                is not { } next)
+            {
+                await statusOverlay.ShowAsync(ipc, "No Japanese subtitle track", 2000, ct);
+                return;
+            }
+
+            await ipc.SetPropertyAsync("sid", next.Sid, ct);
+            if (next.Delay is { } subDelay)
+                await ipc.SetPropertyAsync("sub-delay", subDelay, ct);
+
+            await statusOverlay.LogAsync(ipc,
+                next.Sid == english ? "Subtitles: English" : $"Subtitles: track {next.Sid}", ct);
+        }
+        finally
+        {
+            _trackToggleLock.Release();
+        }
     }
 
     private async Task ToggleSubtitlesAsync(MpvIpcClient ipc, CancellationToken ct)

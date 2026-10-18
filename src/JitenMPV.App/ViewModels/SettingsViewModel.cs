@@ -152,6 +152,8 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private string _keybindNextSub = "";
     [ObservableProperty] private string _keybindLoopSub = "";
 
+    [ObservableProperty] private string _keybindEnglishToggle = "";
+
     [ObservableProperty] private bool _mediaCaptureEnabled;
     [ObservableProperty] private bool _mediaCaptureImage;
     [ObservableProperty] private bool _mediaCaptureImageAnimated;
@@ -686,6 +688,7 @@ public partial class SettingsViewModel : ViewModelBase
         KeybindPrevSub = s.KeybindPrevSub;
         KeybindNextSub = s.KeybindNextSub;
         KeybindLoopSub = s.KeybindLoopSub;
+        KeybindEnglishToggle = s.KeybindEnglishToggle;
 
         if (s.PopupKeybinds is { } kb)
         {
@@ -882,6 +885,7 @@ public partial class SettingsViewModel : ViewModelBase
             KeybindPrevSub = KeybindPrevSub.Trim(),
             KeybindNextSub = KeybindNextSub.Trim(),
             KeybindLoopSub = KeybindLoopSub.Trim(),
+            KeybindEnglishToggle = KeybindEnglishToggle.Trim(),
             MediaCaptureEnabled = MediaCaptureEnabled,
             MediaCaptureImage = MediaCaptureImage,
             MediaCaptureImageAnimated = MediaCaptureImageAnimated,
@@ -1473,6 +1477,7 @@ public partial class SettingsViewModel : ViewModelBase
                 KeybindPrevSub = defaults.KeybindPrevSub;
                 KeybindNextSub = defaults.KeybindNextSub;
                 KeybindLoopSub = defaults.KeybindLoopSub;
+                KeybindEnglishToggle = defaults.KeybindEnglishToggle;
                 break;
             case 6:
                 CacheSize = defaults.CacheSize;

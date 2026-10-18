@@ -186,14 +186,18 @@ local function loop_toggle()
 end
 
 local nav_step
+local english_toggle
 
 local nav_actions = {
     prev_sub = function() nav_step(-1) end,
     next_sub = function() nav_step(1) end,
-    loop_sub = loop_toggle
+    loop_sub = loop_toggle,
+    english_toggle = function() english_toggle() end
 }
 
-local nav_keys = { prev_sub = "Ctrl+LEFT", next_sub = "Ctrl+RIGHT", loop_sub = "Ctrl+l" }
+local nav_keys = {
+    prev_sub = "Ctrl+LEFT", next_sub = "Ctrl+RIGHT", loop_sub = "Ctrl+l", english_toggle = "Alt+x"
+}
 
 -- Held so the nav keys can be claimed only while a plugin is connected: bound at script load they
 -- would take Ctrl+LEFT and friends away from an mpv the user never asked JitenMPV to touch.
@@ -254,6 +258,10 @@ function nav_step(delta)
     else
         mp.commandv("sub-seek", tostring(delta))
     end
+end
+
+function english_toggle()
+    if bar.client then mp.commandv("script-message-to", bar.client, "jiten-toggle-english") end
 end
 
 -- Every button requires a connected plugin, identified by the IPC client name it reports. Subtitle
@@ -800,6 +808,9 @@ apply_mouse_area()
 
 mp.register_script_message("jiten-passthrough-click", function() run_fallback("MBTN_LEFT") end)
 mp.register_script_message("jiten-passthrough-dbl", function() run_fallback("MBTN_LEFT_DBL") end)
+mp.register_script_message("jiten-log", function(level, text)
+    (mp.msg[level] or mp.msg.info)(text)
+end)
 
 mp.observe_property("osd-width", "number", function(_, val)
     if val and val > 0 and val ~= osd_width then

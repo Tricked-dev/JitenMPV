@@ -40,8 +40,8 @@ public partial class SettingsViewModel : ViewModelBase
     /// Sidebar position of the Media tab; ResetSection and the tab visibility bindings share it.
     private const int MediaTabIndex = 3;
     private const int EpisodeTrackingTabIndex = 6;
-    private const int JimakuTabIndex = 6;
-    private const int AdvancedTabIndex = 7;
+    private const int JimakuTabIndex = 7;
+    private const int AdvancedTabIndex = 8;
 
     [ObservableProperty] private string _apiKey = "";
     [ObservableProperty] private string _apiBaseUrl = "";

@@ -1292,7 +1292,7 @@
           </StackPanel>
 
           <!-- ═══════ ADVANCED TAB ═══════ -->
-          <StackPanel IsVisible="{Binding SelectedTabIndex, Converter={StaticResource ParseEquals}, ConverterParameter=7}"
+          <StackPanel IsVisible="{Binding SelectedTabIndex, Converter={StaticResource ParseEquals}, ConverterParameter=8}"
                       Spacing="16">
             <TextBlock Text="Advanced" FontSize="20" FontWeight="Bold" Foreground="#ffffff" />
 
@@ -1424,7 +1424,7 @@
           </StackPanel>
 
           <!-- ═══════ JIMAKU TAB ═══════ -->
-          <StackPanel IsVisible="{Binding SelectedTabIndex, Converter={StaticResource ParseEquals}, ConverterParameter=6}"
+          <StackPanel IsVisible="{Binding SelectedTabIndex, Converter={StaticResource ParseEquals}, ConverterParameter=7}"
                       Spacing="16">
             <TextBlock Text="Jimaku" FontSize="20" FontWeight="Bold" Foreground="#ffffff" />
             <TextBlock Text="Download Japanese subtitles from jimaku.cc for files that have none."

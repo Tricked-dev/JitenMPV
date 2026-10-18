@@ -13,6 +13,10 @@ public enum DeckStatus
 
 public sealed class MediaDeck
 {
+    public const int Anime = 1;
+    public const int Drama = 2;
+    public const int Movie = 3;
+
     [JsonPropertyName("deckId")]
     public int DeckId { get; set; }
 
@@ -33,6 +37,9 @@ public sealed class MediaDeck
 
     [JsonPropertyName("relationships")]
     public List<MediaDeckRelationship>? Relationships { get; set; }
+
+    [JsonPropertyName("links")]
+    public List<MediaDeckLink>? Links { get; set; }
 
     [JsonPropertyName("coverName")]
     public string? CoverName { get; set; }
@@ -60,6 +67,27 @@ public sealed class MediaDeck
     [JsonIgnore]
     public IEnumerable<string> Titles
         => new[] { RomajiTitle, EnglishTitle, OriginalTitle }.OfType<string>().Where(t => t.Trim().Length > 0);
+
+    /// The id at the end of the deck's first link of this type, such as an AniList anime id.
+    public int? LinkId(int linkType)
+        => Links?.Where(l => l.LinkType == linkType)
+            .Select(l => l.Url?.TrimEnd('/').Split('/')[^1])
+            .Select(id => int.TryParse(id, out var n) ? n : (int?)null)
+            .FirstOrDefault(n => n is not null);
+}
+
+public sealed class MediaDeckLink
+{
+    /// A TMDB id is only unique together with the /tv/ or /movie/ in its link.
+    public const int Tmdb = 3;
+    public const int AniList = 4;
+    public const int Mal = 5;
+
+    [JsonPropertyName("linkType")]
+    public int LinkType { get; set; }
+
+    [JsonPropertyName("url")]
+    public string? Url { get; set; }
 }
 
 public sealed class MediaDeckRelationship
@@ -127,11 +155,16 @@ public sealed class SetDeckStatusRequest
     public int Status { get; init; }
 }
 
-public sealed record EpisodeDeck(int DeckId, int? Number, DeckStatus Status);
+/// <param name="Season">Only for episodes titled S01E01, with <paramref name="NumberInSeason"/>.</param>
+public sealed record EpisodeDeck(
+    int DeckId, int? Number, DeckStatus Status, int? Season = null, int? NumberInSeason = null);
 
 public sealed record DeckEpisodes(MediaDeck Deck, IReadOnlyList<EpisodeDeck> Episodes)
 {
     public EpisodeDeck? Find(int number) => Episodes.SingleOrDefault(e => e.Number == number);
+
+    public EpisodeDeck? Find(int season, int number)
+        => Episodes.SingleOrDefault(e => e.Season == season && e.NumberInSeason == number);
 
     public int? LastNumber => Episodes.Max(e => e.Number);
 }

@@ -19,7 +19,7 @@ public sealed record DeckMatch(
     int? Episode,
     IReadOnlyList<DeckCandidate> Candidates)
 {
-    public bool IsMovie => Deck is { ChildrenDeckCount: 0 };
+    public bool IsMovie => Deck is { ChildrenDeckCount: 0 } or { MediaType: MediaDeck.Movie };
 }
 
 public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
@@ -49,7 +49,7 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
         var pool = new Dictionary<int, MediaDeck>();
         foreach (var query in SearchQueries(queries).Take(MaxSearches))
         {
-            foreach (var deck in await api.SearchAnimeAsync(query, ct))
+            foreach (var deck in await api.SearchVideoAsync(query, ct))
                 pool.TryAdd(deck.DeckId, deck);
             // Only the file's own title stops the search: a folder match alone would hide its movie or OVA.
             if (pool.Values.Any(d => SeriesScore(d, queries[..1]) >= MatchScore)) break;
@@ -66,12 +66,18 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
             return new DeckMatch(DeckMatchKind.Matched, named, null, candidates);
 
         // A numbered episode cannot be a movie.
-        var eligible = pool.Values.Where(d => identity.Episode is null || d.ChildrenDeckCount > 0).ToList();
+        var eligible = pool.Values
+            .Where(d => identity.Episode is null || d is { ChildrenDeckCount: > 0, MediaType: not MediaDeck.Movie })
+            .ToList();
         var season = identity.Season ?? 1;
-        var seasonDeck = named ?? Pick(eligible.Where(d => SeasonOf(d) == season), queries, identity.Year);
+        var seasonDeck = named ?? Pick(eligible.Where(d => SeasonOf(d) == season), queries, identity);
+        // A drama keeps all its seasons in one deck.
         if (seasonDeck is null && season > 1
-            && Pick(eligible.Where(d => SeasonOf(d) == 1), queries, identity.Year) is { } first)
-            seasonDeck = await WalkSequelsAsync(first, season - 1, ct);
+            && Pick(eligible.Where(d => SeasonOf(d) == 1), queries, identity) is { } first)
+        {
+            var dramas = eligible.Where(d => d.MediaType == MediaDeck.Drama && SeasonOf(d) == 1);
+            seasonDeck = await WalkSequelsAsync(first, season - 1, ct) ?? Pick(dramas, queries, identity);
+        }
 
         if (seasonDeck is null)
         {
@@ -84,7 +90,7 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
 
     public async Task<IReadOnlyList<DeckCandidate>> SearchAsync(string query, CancellationToken ct)
     {
-        var decks = await api.SearchAnimeAsync(query, ct);
+        var decks = await api.SearchVideoAsync(query, ct);
         return [.. decks.Select(d => new DeckCandidate(d, TitleScore(d, [query])))
             .OrderByDescending(c => c.Score).Take(MaxCandidates)];
     }
@@ -101,6 +107,12 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
             return identity.Episode is null or 1 ? Matched(deck, null) : Lost();
         if (identity.Episode is not { } episode)
             return Matched(deck, null);
+        // Only S01E01-style episode titles say where a later season starts.
+        if (deck.MediaType == MediaDeck.Drama && identity.Season is > 1 and var season && SeasonOf(deck) < season)
+        {
+            var episodes = await api.GetEpisodesAsync(deck.DeckId, ct);
+            return Matched(deck, episodes.Find(season, episode)?.Number);
+        }
         if (episode <= deck.ChildrenDeckCount)
             return Matched(deck, episode);
 
@@ -134,7 +146,8 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
             var sequels = new List<MediaDeck>();
             foreach (var rel in current.Relationships ?? [])
             {
-                if (rel.RelationshipType != MediaDeckRelationship.PrequelOf || rel.TargetDeck?.MediaType != 1)
+                if (rel.RelationshipType != MediaDeckRelationship.PrequelOf
+                    || rel.TargetDeck?.MediaType != current.MediaType)
                     continue;
                 if (await api.GetDeckAsync(rel.TargetDeckId, ct) is { ChildrenDeckCount: > 0 } sequel)
                     sequels.Add(sequel);
@@ -180,7 +193,7 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
             foreach (var rel in current.Relationships ?? [])
             {
                 if (rel.RelationshipType != MediaDeckRelationship.SequelOf || rel.IsInverse
-                    || rel.TargetDeck?.MediaType != 1)
+                    || rel.TargetDeck?.MediaType != current.MediaType)
                     continue;
                 if (await api.GetDeckAsync(rel.TargetDeckId, ct) is { ChildrenDeckCount: > 0 } prequel)
                     prequels.Add(prequel);
@@ -192,8 +205,10 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
         return chain;
     }
 
-    /// The best deck when it clearly beats the rest; a release year breaks a tie between remakes.
-    private static MediaDeck? Pick(IEnumerable<MediaDeck> decks, IReadOnlyList<string> queries, int? year)
+    /// The best deck when it clearly beats the rest. A release year breaks a tie between remakes,
+    /// an anime wins one with its live-action adaptation, and a file without an episode number
+    /// picks the film over the drama.
+    private static MediaDeck? Pick(IEnumerable<MediaDeck> decks, IReadOnlyList<string> queries, MediaIdentity identity)
     {
         var ranked = decks
             .Select(d => (Deck: d, Score: SeriesScore(d, queries)))
@@ -206,8 +221,14 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
         var close = ranked.Where(x => ranked[0].Score - x.Score < MatchMargin).ToList();
         if (close.Count == 1) return close[0].Deck;
 
-        var sameYear = year is null ? [] : close.Where(x => x.Deck.ReleaseYear == year).ToList();
-        return sameYear.Count == 1 ? sameYear[0].Deck : null;
+        var sameYear = identity.Year is not { } year ? [] : close.Where(x => x.Deck.ReleaseYear == year).ToList();
+        if (sameYear.Count == 1) return sameYear[0].Deck;
+
+        var anime = close.Where(x => x.Deck.MediaType == MediaDeck.Anime).ToList();
+        if (anime.Count == 1) return anime[0].Deck;
+
+        var films = identity.Episode is null ? close.Where(x => x.Deck.MediaType == MediaDeck.Movie).ToList() : [];
+        return films.Count == 1 ? films[0].Deck : null;
     }
 
     private static List<string> Queries(MediaIdentity identity)

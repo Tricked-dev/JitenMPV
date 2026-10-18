@@ -22,38 +22,42 @@ public static partial class ReleaseNameParser
         new(@"\[.*?\]"), new(@"\(.*?\)"),
         new(@"(?<![A-Za-z0-9])(?:2160|1080|720|576|480|360)[pP](?![A-Za-z0-9])"),
         new(@"(?<!\d)\d{3,4}x\d{3,4}(?!\d)"), new(@"[xX]26[45]"), new(@"(?<![A-Za-z0-9])[hH]\.?26[45]"),
-        new(@"[bB]lu-?[rR]ay"), new("Hi10P"), new("FLAC"), new("AAC"), new("OPUS"), new("AV1"),
+        new(@"[bB]lu-?[rR]ay"), new("Hi10P"), new("FLAC"), new(@"(?:AAC|DDP|DD|AC3)\d\.\d"), new("AAC"),
+        new("OPUS"), new("AV1"),
         new("Dual Audio"), new("HEVC"), new("WEB-DL"), new("WEBRip"),
         new(@"(?<![A-Za-z0-9])(?:10|8)[- ]?[bB]it(?![A-Za-z])"),
-        new(@"(?<![A-Za-z0-9])(?:NF|AMZN|CR|DSNP|HIDIVE|ADN|B-Global)(?![A-Za-z0-9])"),
+        new(@"(?<![A-Za-z0-9])(?:NF|AMZN|CR|DSNP|HIDIVE|ADN|B-Global"
+            + @"|(?i:Netflix|Amazon|Hulu|U-NEXT|FOD|DMM-TV|Viki|WOWOW|TVer|iQIYI|HDTV))(?![A-Za-z0-9])"),
+        new(@"-?(?<!\d)(?:19|20)\d\d-\d\d-\d\d(?!\d)"), new("-?JPTVclub"),
         new(@"\.(?:mkv|mp4|avi|webm|m4v|mov|ts|m2ts|wmv|flv|ogm|3gp)$", RegexOptions.IgnoreCase),
     ];
 
-    private static readonly Regex[] StrongEpisodes = [new(@"[Ss]\d+[Ee](\d+)"), new(@"(?<![A-Za-z0-9])\d+[xX](\d+)")];
+    private static readonly Regex[] StrongEpisodes = [new(@"[Ss]\d+[Ee][Pp]?(\d+)"), new(@"(?<![A-Za-z0-9])\d+[xX](\d+)")];
 
     private static readonly Regex[] WeakEpisodes =
     [
-        new(@"[Ss]\d+[Ee](\d+)"), new(@"[Ee]pisode\s*(\d+)"),
+        new(@"[Ss]\d+[Ee][Pp]?(\d+)"), new(@"[Ee]pisode\s*(\d+)"),
         new(@"(?<![A-Za-z])[Ee][Pp]\.?\s*(\d+)"), new(@"(?<![A-Za-z0-9])\d+[xX](\d+)"),
         new(@"\s(\d{1,3}|(?!19|20)\d{4})(?:[vV]\d+)?\s*-\s*[A-Za-z]"), new(@" - (\d+)[vV]?\d*(?![\d\p{L}])"),
         new(@"\[(\d\d?)\]"), new(@"\[(\d\d?)[vV]\d+\]"),
         new(@"(?<![A-Za-z0-9])[Ee][Pp]?(\d+)(?!\d)"),
-        new(@"第([0-9０-９]+)話"), new(@"(?<!\S)#(\d+)(?!\d)"),
+        new(@"第([0-9０-９]+)話"), new(@"(?<!\S)[#＃](\d+)(?!\d)"), new(@"（(\d{1,3})）"),
         new(@"(?<=\p{L}_)(\d{2,3})(?:[vV]\d+)?(?:\.[A-Za-z0-9]{2,4})?$"),
     ];
 
     private static readonly Regex[] Seasons =
     [
-        new(@"[Ss](\d+)[Ee]\d+"), new(@"(?<![A-Za-z0-9])(\d+)[xX]\d\d(?!\d)"), new(@"[Ss]eason\s*(\d+)"),
+        new(@"[Ss](\d+)[Ee][Pp]?\d+"), new(@"(?<![A-Za-z0-9])(\d+)[xX]\d\d(?!\d)"), new(@"[Ss]eason\s*(\d+)"),
         new(@"(?<![A-Za-z0-9])[Ss](\d+)(?!\d)"), new(@"(\d+)(?:st|nd|rd|th)\s+[Ss]eason"),
         new(@"(\d+)(?:st|nd|rd|th)\s+[Aa]ttack"), new(@"第([0-9０-９]+)期"),
+        new(@"(?<=[^\x00-\x7F])(\d{1,2})(?:st|nd|rd|th)(?![A-Za-z])"),
     ];
 
     private static readonly Regex[] SeasonSuffixes =
     [
         new(@"^(.*?)\s+[Ss]\d+$"), new(@"^(.*?)\s+\d+(?:st|nd|rd|th)\s+[Ss]eason$"),
         new(@"^(.*?)\s+[Ss]eason\s+\d+$"), new(@"^(.*?)\s*第[0-9０-９]+期$"),
-        new(@"^(.*?)\s+(?:II|III|IV|V)$"),
+        new(@"^(.*?)\s+(?:II|III|IV|V)$"), new(@"^(.*?[^\x00-\x7F])\d{1,2}(?:st|nd|rd|th)$"),
     ];
 
     private static readonly string[] RomanSeasons = ["II", "III", "IV", "V"];
@@ -88,13 +92,13 @@ public static partial class ReleaseNameParser
         if (title.Contains("${", StringComparison.Ordinal) || title.Contains('}')) return true;
         if (Uuid().IsMatch(title)) return true;
         if (!title.Any(char.IsWhiteSpace) && title.Length >= 16 && HexOnly().IsMatch(title)) return true;
-        if (ThreeLetters().IsMatch(title)) return false;
+        if (ThreeLetters().IsMatch(title) || JapaneseScript().IsMatch(title)) return false;
         return title.Count(char.IsLetter) < 3;
     }
 
     internal static string Sanitize(string text)
     {
-        text = text.Replace('【', ' ').Replace('】', ' ');
+        text = LaterLenticular().Replace(text, " ").Replace('【', ' ').Replace('】', ' ');
         foreach (var tag in ReleaseTags)
             text = tag.Replace(text, " ");
         return Whitespace().Replace(SeparatorChars().Replace(text, " "), " ").Trim();
@@ -125,6 +129,8 @@ public static partial class ReleaseNameParser
     {
         var hasOva = Ova().IsMatch(text.ToLowerInvariant());
         var clean = TrailingVersion().Replace(Sanitize(HalfEpisodeTitle().Replace(EpisodeRange().Replace(text, ""), "$1")), "");
+        if (IsSceneName(text))
+            clean = SceneGroup().Replace(clean, "");
         if (SceneTail().Match(clean) is { Success: true } scene && IsSceneName(text))
             clean = scene.Groups[1].Value;
 
@@ -141,7 +147,7 @@ public static partial class ReleaseNameParser
         else
         {
             Regex[] patterns = [TitleBeforeSxxEyy(), TitleBeforeNxM(), TitleBeforeEpisodeCode(),
-                TitleBeforeJapaneseEpisode(), TitleBeforeHashEpisode()];
+                TitleBeforeJapaneseEpisode(), TitleBeforeHashEpisode(), TitleBeforeBroadcastNumber()];
             title = FirstGroup(clean, keepTrailingNumber ? patterns : [.. patterns, TitleBeforeTrailingNumber()]) ?? clean;
         }
 
@@ -222,6 +228,10 @@ public static partial class ReleaseNameParser
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9+.\-]*://")]
     private static partial Regex UrlScheme();
 
+    /// Only a leading 【】 holds the title; later ones carry channel or broadcast notes.
+    [GeneratedRegex(@"(?<=\S\s*)【[^】]*】")]
+    private static partial Regex LaterLenticular();
+
     [GeneratedRegex(@"[._~]")]
     private static partial Regex SeparatorChars();
 
@@ -279,13 +289,17 @@ public static partial class ReleaseNameParser
     [GeneratedRegex(@"\s+[Ss]\d+\s*$")]
     private static partial Regex TrailingSeasonCode();
 
+    [GeneratedRegex(@"\s-[A-Za-z0-9]+$")]
+    private static partial Regex SceneGroup();
+
     [GeneratedRegex(@"(?<!\d(?:st|nd|rd|th))\s+[Ss]eason\s*\d*\s*$")]
     private static partial Regex TrailingSeasonWord();
 
     [GeneratedRegex(@"^(.*?[Ee]pisode\s+[Oo]f.*?)\s+\d+[vV]?\d*\s*-\s*(.+)$")]
     private static partial Regex EpisodeOfFilm();
 
-    [GeneratedRegex(@"^(.*?)\s*[Ss]\d+[Ee]\d+")]
+    /// A year between the title and SxxEyy tells remakes apart; it is not part of the title.
+    [GeneratedRegex(@"^(.*?)(?:\s+(?:19|20)\d\d)?\s*[Ss]\d+[Ee][Pp]?\d+")]
     private static partial Regex TitleBeforeSxxEyy();
 
     [GeneratedRegex(@"^(.*?)\s*-?\s*(?<![A-Za-z0-9])\d+[xX]\d+")]
@@ -297,8 +311,12 @@ public static partial class ReleaseNameParser
     [GeneratedRegex(@"^(.*?)\s*第[0-9０-９]+話")]
     private static partial Regex TitleBeforeJapaneseEpisode();
 
-    [GeneratedRegex(@"^(.*?)\s*(?<!\S)#\d+(?!\d)")]
+    [GeneratedRegex(@"^(.*?)\s*(?<!\S)[#＃]\d+(?!\d)")]
     private static partial Regex TitleBeforeHashEpisode();
+
+    /// Japanese broadcast recordings number episodes as （０８）.
+    [GeneratedRegex(@"^(.*?)\s*（\d{1,3}）")]
+    private static partial Regex TitleBeforeBroadcastNumber();
 
     [GeneratedRegex(@"^(.*?)\s*-?\s*\d+[vV]?\d*\s*$")]
     private static partial Regex TitleBeforeTrailingNumber();
@@ -320,4 +338,8 @@ public static partial class ReleaseNameParser
 
     [GeneratedRegex(@"\p{L}{3}")]
     private static partial Regex ThreeLetters();
+
+    /// Japanese titles can be a single character.
+    [GeneratedRegex(@"[\p{IsHiragana}\p{IsKatakana}\p{IsCJKUnifiedIdeographs}]")]
+    private static partial Regex JapaneseScript();
 }

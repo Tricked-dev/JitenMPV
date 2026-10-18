@@ -6,7 +6,8 @@ namespace JitenMPV.Core.Api;
 
 public interface IMediaDeckApi
 {
-    Task<IReadOnlyList<MediaDeck>> SearchAnimeAsync(string title, CancellationToken ct);
+    /// Anime, drama and movie decks.
+    Task<IReadOnlyList<MediaDeck>> SearchVideoAsync(string title, CancellationToken ct);
 
     Task<MediaDeck?> GetDeckAsync(int deckId, CancellationToken ct);
 
@@ -20,16 +21,19 @@ public interface IMediaDeckApi
 
 public sealed partial class JitenApiClient : IMediaDeckApi
 {
-    private const int AnimeMediaType = 1;
-
     private const int MaxDetailPages = 200;
 
-    public async Task<IReadOnlyList<MediaDeck>> SearchAnimeAsync(string title, CancellationToken ct)
+    /// One search covers all three types: mediaType takes a single value, but books, games and
+    /// the rest can be excluded.
+    private const string NonVideoMediaTypes = "4,5,6,7,8,9,10,11";
+
+    public async Task<IReadOnlyList<MediaDeck>> SearchVideoAsync(string title, CancellationToken ct)
     {
-        var path = $"/api/media-deck/get-media-decks?mediaType={AnimeMediaType}"
-                   + $"&titleFilter={Uri.EscapeDataString(title)}&offset=0";
+        var path = $"/api/media-deck/get-media-decks?titleFilter={Uri.EscapeDataString(title)}"
+                   + $"&excludeMediaTypes={NonVideoMediaTypes}&offset=0";
         var page = await GetAsync<PagedResponse<List<MediaDeck>>>(path, "SearchMediaDecks", ct);
-        return [.. (page?.Data ?? []).Where(d => d.DeckId > 0 && d.MediaType == AnimeMediaType)];
+        return [.. (page?.Data ?? [])
+            .Where(d => d.DeckId > 0 && d.MediaType is MediaDeck.Anime or MediaDeck.Drama or MediaDeck.Movie)];
     }
 
     public async Task<MediaDeck?> GetDeckAsync(int deckId, CancellationToken ct)
@@ -46,6 +50,7 @@ public sealed partial class JitenApiClient : IMediaDeckApi
         var episodes = new List<EpisodeDeck>();
         var seen = new HashSet<int>();
         var numbers = new HashSet<int>();
+        var codes = new HashSet<(int, int)>();
         MediaDeck? main = null;
         var offset = 0;
 
@@ -72,7 +77,15 @@ public sealed partial class JitenApiClient : IMediaDeckApi
                 if (number is { } n && !numbers.Add(n))
                     throw new InvalidDataException($"Deck {deckId} has two decks titled Episode {n}");
 
-                episodes.Add(new EpisodeDeck(row.DeckId, number, ToStatus(row.Status)));
+                var code = SeasonEpisode().Match(row.OriginalTitle ?? "");
+                (int, int)? seasonEpisode = code.Success
+                    ? (int.Parse(code.Groups[1].Value), int.Parse(code.Groups[2].Value))
+                    : null;
+                if (seasonEpisode is { } se && !codes.Add(se))
+                    throw new InvalidDataException($"Deck {deckId} has two decks titled {row.OriginalTitle}");
+
+                episodes.Add(new EpisodeDeck(row.DeckId, number, ToStatus(row.Status),
+                    seasonEpisode?.Item1, seasonEpisode?.Item2));
             }
 
             offset += rows.Count;
@@ -81,6 +94,16 @@ public sealed partial class JitenApiClient : IMediaDeckApi
 
         if (main is null || main.DeckId != deckId)
             throw new InvalidDataException($"Deck {deckId} detail did not describe deck {deckId}");
+
+        // Dramas that title their episodes S01E01 instead are numbered on through the seasons.
+        if (numbers.Count == 0)
+        {
+            var order = episodes.Where(e => e.Season is not null)
+                .OrderBy(e => e.Season).ThenBy(e => e.NumberInSeason).Select(e => e.DeckId).ToList();
+            episodes = [.. episodes.Select(e => e.Season is null
+                ? e
+                : e with { Number = order.IndexOf(e.DeckId) + 1 })];
+        }
         return new DeckEpisodes(main, episodes);
     }
 
@@ -125,4 +148,7 @@ public sealed partial class JitenApiClient : IMediaDeckApi
 
     [GeneratedRegex(@"^[Ee]pisode\s+(\d+)$")]
     private static partial Regex EpisodeTitle();
+
+    [GeneratedRegex(@"^[Ss](\d+)\s*[Ee](\d+)$")]
+    private static partial Regex SeasonEpisode();
 }

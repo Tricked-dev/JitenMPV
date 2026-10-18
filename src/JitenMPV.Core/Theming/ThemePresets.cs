@@ -19,6 +19,11 @@ public static class ThemePresets
         Underline = true
     };
 
+    public static WordStyleState Leech { get; } = new()
+    {
+        ShadowColor = "#f59e0b", ShadowDepth = 3
+    };
+
     private static readonly WordStyleState DimmedStyle = new()
     {
         TextColor = "#969696", OutlineColor = "#505050", OutlineSize = 3, TextOpacity = 150

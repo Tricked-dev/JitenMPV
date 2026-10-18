@@ -62,6 +62,10 @@ public sealed class PluginSettings
     [JsonPropertyName("frequency_mark_all_states")]
     public bool FrequencyMarkAllStates { get; set; }
 
+    /// Uses the leech threshold from the user's Jiten study settings.
+    [JsonPropertyName("highlight_leeches")]
+    public bool HighlightLeeches { get; set; }
+
     [JsonPropertyName("blur_enabled")]
     public bool BlurEnabled { get; set; }
 
@@ -299,6 +303,10 @@ public sealed class PluginSettings
 
     [JsonPropertyName("custom_theme_colors")]
     public Dictionary<string, CustomStateStyle>? CustomThemeColors { get; set; }
+
+    /// Preset the custom theme was copied from, offered as the target of its reset.
+    [JsonPropertyName("custom_theme_base")]
+    public string? CustomThemeBase { get; set; }
 
     /// Master switch for screenshot/audio capture on mine. No-ops when the account is not Jiten+.
     [JsonPropertyName("media_capture_enabled")]

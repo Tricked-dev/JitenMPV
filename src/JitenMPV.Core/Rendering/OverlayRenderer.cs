@@ -92,11 +92,12 @@ public sealed class OverlayRenderer
         HashSet<(int WordId, byte ReadingIndex)>? iPlusOneWords = null,
         HashSet<(int WordId, byte ReadingIndex)>? frequencyWords = null,
         HashSet<(int WordId, byte ReadingIndex)>? revealedWords = null,
-        bool suppressWrap = true)
+        bool suppressWrap = true,
+        HashSet<(int WordId, byte ReadingIndex)>? leechWords = null)
     {
         var snap = _snap;
         var (runs, underlines) = SubtitleRunBuilder.Build(
-            originalText, entry, _styleResolver, iPlusOneWords, frequencyWords, revealedWords);
+            originalText, entry, _styleResolver, iPlusOneWords, frequencyWords, revealedWords, leechWords);
 
         var sb = new StringBuilder();
         sb.Append(suppressWrap ? snap.Preamble : snap.WrappingPreamble);

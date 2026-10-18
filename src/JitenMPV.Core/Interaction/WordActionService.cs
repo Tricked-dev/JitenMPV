@@ -2,6 +2,7 @@ using JitenMPV.Core.Api;
 using JitenMPV.Core.Api.Models;
 using JitenMPV.Core.Cache;
 using JitenMPV.Core.Mpv;
+using JitenMPV.Core.Plugin;
 using Microsoft.Extensions.Logging;
 
 namespace JitenMPV.Core.Interaction;
@@ -10,7 +11,8 @@ public sealed class WordActionService(
     JitenApiClient api,
     ParseCache cache,
     StatusOverlay status,
-    ILogger logger)
+    ILogger logger,
+    LeechService? leeches = null)
 {
     public async Task<bool> SetStateAsync(
         int wordId, byte readingIndex, PopupAction action,
@@ -27,6 +29,7 @@ public sealed class WordActionService(
             if (!response.Success) return false;
 
             cache.UpdateWordState(wordId, readingIndex, newState);
+            leeches?.Invalidate();
 
             var entry = cache.GetOrDefault(subtitleText);
             var spelling = entry?.VocabDetails.GetValueOrDefault((wordId, readingIndex))?.Spelling ?? "word";

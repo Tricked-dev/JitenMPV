@@ -73,6 +73,8 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty] private int _frequencyTopN;
     [ObservableProperty] private bool _frequencyMarkAllStates;
 
+    [ObservableProperty] private bool _highlightLeeches;
+
     [ObservableProperty] private bool _blurEnabled;
     [ObservableProperty] private double _blurStrength;
     [ObservableProperty] private bool _blurRevealOnHover;
@@ -528,6 +530,25 @@ public partial class SettingsViewModel : ViewModelBase
     public ObservableCollection<StateStyleViewModel> CustomStateStyles { get; } = [];
     private string _previousTheme = "Default";
 
+    [ObservableProperty] private StateStyleViewModel _leechStyle = DefaultLeechStyle();
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasCustomThemeBase), nameof(ResetCustomThemeLabel))]
+    private string? _customThemeBase;
+
+    public bool HasCustomThemeBase => CustomThemeBase is not null;
+    public string ResetCustomThemeLabel => $"Reset to {CustomThemeBase}";
+
+    private static StateStyleViewModel DefaultLeechStyle()
+        => StateStyleViewModel.FromWordStyleState("Leech", ThemePresets.Leech);
+
+    partial void OnLeechStyleChanged(StateStyleViewModel? oldValue, StateStyleViewModel newValue)
+    {
+        if (oldValue is not null)
+            oldValue.PropertyChanged -= OnStyleEdited;
+        newValue.PropertyChanged += OnStyleEdited;
+    }
+
     public ObservableCollection<string> AvailableThemes { get; } =
     [
         "Default", "High Contrast", "Monochrome", "Subtle", "Underline", "Toy Box", "Custom"
@@ -596,6 +617,7 @@ public partial class SettingsViewModel : ViewModelBase
         };
         WatchStyleEdits(CustomStateStyles);
         WatchStyleEdits(PitchStyles);
+        LeechStyle.PropertyChanged += OnStyleEdited;
 
         ApiKey = s.ApiKey ?? "";
         ApiBaseUrl = s.ApiBaseUrl;
@@ -615,6 +637,7 @@ public partial class SettingsViewModel : ViewModelBase
         FrequencyMarkingEnabled = s.FrequencyMarkingEnabled;
         FrequencyTopN = s.FrequencyTopN;
         FrequencyMarkAllStates = s.FrequencyMarkAllStates;
+        HighlightLeeches = s.HighlightLeeches;
         BlurEnabled = s.BlurEnabled;
         BlurStrength = s.BlurStrength;
         BlurRevealOnHover = s.BlurRevealOnHover;
@@ -715,7 +738,10 @@ public partial class SettingsViewModel : ViewModelBase
 
         _previousTheme = s.Theme == "Custom" ? "Default" : s.Theme;
         if (s.Theme == "Custom" && s.CustomThemeColors is { Count: > 0 } custom)
+        {
             InitCustomStylesFromSettings(custom);
+            CustomThemeBase = s.CustomThemeBase;
+        }
 
         _savedJson = SettingsManager.Serialize(ToPluginSettings());
         _autoSaveArmed = true;
@@ -836,6 +862,7 @@ public partial class SettingsViewModel : ViewModelBase
             FrequencyMarkingEnabled = FrequencyMarkingEnabled,
             FrequencyTopN = FrequencyTopN,
             FrequencyMarkAllStates = FrequencyMarkAllStates,
+            HighlightLeeches = HighlightLeeches,
             BlurEnabled = BlurEnabled,
             BlurStrength = BlurStrength,
             BlurRevealOnHover = BlurRevealOnHover,
@@ -941,8 +968,9 @@ public partial class SettingsViewModel : ViewModelBase
             EpisodeTrackingKeepShowStatus = EpisodeTrackingKeepShowStatus,
             KeybindEpisodePicker = KeybindEpisodePicker.Trim(),
             CustomThemeColors = SelectedTheme == "Custom" && CustomStateStyles.Count > 0
-                ? CustomStateStyles.ToDictionary(s => s.State.ToString(), s => s.ToCustomStateStyle())
+                ? CustomStateStyles.Append(LeechStyle).ToDictionary(s => s.DisplayName, s => s.ToCustomStateStyle())
                 : null,
+            CustomThemeBase = SelectedTheme == "Custom" ? CustomThemeBase : null,
             PopupKeybinds = BuildKeybindsDictionary(),
             JimakuEnabled = JimakuEnabled,
             JimakuAutoFetch = JimakuAutoFetch,
@@ -1368,14 +1396,30 @@ public partial class SettingsViewModel : ViewModelBase
     private void InitCustomStylesFromPreset(string presetName)
     {
         if (!ThemePresets.All.TryGetValue(presetName, out var preset))
-            preset = ThemePresets.Default;
+            (presetName, preset) = ("Default", ThemePresets.Default);
 
         CustomStateStyles.Clear();
         foreach (var state in Enum.GetValues<KnownState>())
         {
             var ws = preset.TryGetValue(state, out var style) ? style : ThemePresets.Unparsed;
-            CustomStateStyles.Add(StateStyleViewModel.FromWordStyleState(state, ws));
+            CustomStateStyles.Add(StateStyleViewModel.FromWordStyleState(state.ToString(), ws));
         }
+        LeechStyle = DefaultLeechStyle();
+        CustomThemeBase = presetName;
+    }
+
+    [RelayCommand]
+    private void CustomiseTheme()
+    {
+        InitCustomStylesFromPreset(SelectedTheme);
+        SelectedTheme = "Custom";
+    }
+
+    [RelayCommand]
+    private void ResetCustomTheme()
+    {
+        if (CustomThemeBase is { } preset)
+            InitCustomStylesFromPreset(preset);
     }
 
     private void InitCustomStylesFromSettings(Dictionary<string, CustomStateStyle> custom)
@@ -1384,13 +1428,16 @@ public partial class SettingsViewModel : ViewModelBase
         foreach (var state in Enum.GetValues<KnownState>())
         {
             if (custom.TryGetValue(state.ToString(), out var css))
-                CustomStateStyles.Add(StateStyleViewModel.FromCustomStateStyle(state, css));
+                CustomStateStyles.Add(StateStyleViewModel.FromCustomStateStyle(state.ToString(), css));
             else
             {
                 var fallback = ThemePresets.Default.TryGetValue(state, out var ws) ? ws : ThemePresets.Unparsed;
-                CustomStateStyles.Add(StateStyleViewModel.FromWordStyleState(state, fallback));
+                CustomStateStyles.Add(StateStyleViewModel.FromWordStyleState(state.ToString(), fallback));
             }
         }
+        LeechStyle = custom.TryGetValue("Leech", out var leech)
+            ? StateStyleViewModel.FromCustomStateStyle("Leech", leech)
+            : DefaultLeechStyle();
     }
 
     [RelayCommand]
@@ -1405,6 +1452,7 @@ public partial class SettingsViewModel : ViewModelBase
 
         SelectedTheme = "Custom";
         InitCustomStylesFromSettings(imported);
+        CustomThemeBase = null;
         ImportCode = "";
         ImportStatus = themeName is not null
             ? $"Imported \"{themeName}\""
@@ -1524,6 +1572,8 @@ public partial class SettingsViewModel : ViewModelBase
                 SubtitleSingleLine = defaults.SubtitleSingleLine;
                 ConvertHalfWidthKatakana = defaults.ConvertHalfWidthKatakana;
                 CustomStateStyles.Clear();
+                LeechStyle = DefaultLeechStyle();
+                CustomThemeBase = null;
                 break;
             case 2:
                 IPlusOneEnabled = defaults.IPlusOneEnabled;
@@ -1532,6 +1582,7 @@ public partial class SettingsViewModel : ViewModelBase
                 FrequencyMarkingEnabled = defaults.FrequencyMarkingEnabled;
                 FrequencyTopN = defaults.FrequencyTopN;
                 FrequencyMarkAllStates = defaults.FrequencyMarkAllStates;
+                HighlightLeeches = defaults.HighlightLeeches;
                 BlurEnabled = defaults.BlurEnabled;
                 BlurStrength = defaults.BlurStrength;
                 BlurRevealOnHover = defaults.BlurRevealOnHover;

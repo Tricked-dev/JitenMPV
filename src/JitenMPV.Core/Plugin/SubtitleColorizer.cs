@@ -17,15 +17,17 @@ public sealed class SubtitleColorizer(
     OverlayRenderer renderer,
     IPlusOneDetector? iPlusOneDetector,
     FrequencyMarker? frequencyMarker,
-    ILogger logger)
+    ILogger logger,
+    LeechService? leechService = null)
 {
-    private sealed record DetectorSnapshot(IPlusOneDetector? IPlusOne, FrequencyMarker? Frequency);
+    private sealed record DetectorSnapshot(
+        IPlusOneDetector? IPlusOne, FrequencyMarker? Frequency, LeechService? Leeches);
 
-    private volatile DetectorSnapshot _detectors = new(iPlusOneDetector, frequencyMarker);
+    private volatile DetectorSnapshot _detectors = new(iPlusOneDetector, frequencyMarker, leechService);
 
-    public void UpdateDetectors(IPlusOneDetector? iPlusOne, FrequencyMarker? freqMarker)
+    public void UpdateDetectors(IPlusOneDetector? iPlusOne, FrequencyMarker? freqMarker, LeechService? leeches = null)
     {
-        _detectors = new DetectorSnapshot(iPlusOne, freqMarker);
+        _detectors = new DetectorSnapshot(iPlusOne, freqMarker, leeches);
     }
 
     public async Task<ColorizedSubtitle> ColorizeAsync(
@@ -54,7 +56,7 @@ public sealed class SubtitleColorizer(
             var freqWords = det.Frequency?.Mark(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);
 
             var (ass, underlines, runs) = renderer.RenderSubtitle(
-                subtitleText, entry, iPlusOne, freqWords, revealedWords, suppressWrap);
+                subtitleText, entry, iPlusOne, freqWords, revealedWords, suppressWrap, det.Leeches?.Current);
             return Task.FromResult(new ColorizedSubtitle(ass, entry, underlines, runs));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -92,9 +94,10 @@ public sealed class SubtitleColorizer(
             var det = _detectors;
             var iPlusOne = det.IPlusOne?.Detect(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);
             var freqWords = det.Frequency?.Mark(entry.Tokens, entry.VocabStates, entry.FrequencyRanks);
+            var leeches = det.Leeches is { } leechService ? await leechService.GetLeechesAsync(ct) : null;
 
             var (ass, underlines, runs) = renderer.RenderSubtitle(
-                subtitleText, entry, iPlusOne, freqWords, revealedWords, suppressWrap);
+                subtitleText, entry, iPlusOne, freqWords, revealedWords, suppressWrap, leeches);
             return new ColorizedSubtitle(ass, entry, underlines, runs);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

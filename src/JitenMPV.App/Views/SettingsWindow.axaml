@@ -290,8 +290,14 @@
 
             <StackPanel Spacing="4">
               <TextBlock Text="Theme" Foreground="#a1a1aa" FontSize="13" FontWeight="Medium" />
-              <ComboBox ItemsSource="{Binding AvailableThemes}"
-                        SelectedItem="{Binding SelectedTheme}" MinWidth="200" />
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox ItemsSource="{Binding AvailableThemes}"
+                          SelectedItem="{Binding SelectedTheme}" MinWidth="200" />
+                <Button Content="Customize" Command="{Binding CustomiseThemeCommand}"
+                        IsVisible="{Binding !IsCustomTheme}" />
+              </StackPanel>
+              <TextBlock Text="Copies this theme to Custom so you can change its colours."
+                         FontSize="12" Foreground="#71717a" IsVisible="{Binding !IsCustomTheme}" />
             </StackPanel>
 
             <Expander Header="Import from JitenReader" Padding="0">
@@ -313,6 +319,8 @@
               <TextBlock Text="WORD STATE STYLES" Classes="section-header" />
               <TextBlock Text="Customize the appearance for each word knowledge state"
                          FontSize="12" Foreground="#71717a" />
+              <Button Content="{Binding ResetCustomThemeLabel}" Command="{Binding ResetCustomThemeCommand}"
+                      IsVisible="{Binding HasCustomThemeBase}" HorizontalAlignment="Left" />
 
               <ItemsControl ItemsSource="{Binding CustomStateStyles}">
                 <ItemsControl.ItemTemplate>
@@ -422,6 +430,58 @@
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
+
+              <Expander Margin="0,2" DataContext="{Binding LeechStyle}" x:DataType="vm:StateStyleViewModel">
+                <Expander.Header>
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <Border Width="14" Height="14" CornerRadius="3"
+                            Background="{Binding ShadowColor, Converter={StaticResource StringToBrush}}" />
+                    <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="Medium"
+                               Foreground="#d4d4d8" VerticalAlignment="Center" />
+                  </StackPanel>
+                </Expander.Header>
+
+                <Border Background="#18181b" BorderBrush="#3f3f46" BorderThickness="1"
+                        CornerRadius="8" Padding="16" Margin="0,4,0,0">
+                  <StackPanel Spacing="12">
+                    <TextBlock Text="Added on top of the word's colours when leech highlighting is on."
+                               FontSize="12" Foreground="#71717a" TextWrapping="Wrap" />
+                    <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                      <TextBlock Text="Shadow" VerticalAlignment="Center" Foreground="#a1a1aa" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <CheckBox IsChecked="{Binding HasShadow}" VerticalAlignment="Center" />
+                        <ColorPicker Color="{Binding ShadowColor, Converter={StaticResource HexToColor}}"
+                                     IsAlphaVisible="False"
+                                     IsEnabled="{Binding HasShadow}" HorizontalAlignment="Left" />
+                        <Slider Value="{Binding ShadowDepth}" Minimum="0" Maximum="10" Width="150"
+                                IsEnabled="{Binding HasShadow}"
+                                TickFrequency="0.5" IsSnapToTickEnabled="True" />
+                        <TextBlock Text="{Binding ShadowDepth, StringFormat='{}{0:F1}'}"
+                                   VerticalAlignment="Center" Width="30" Foreground="#ffffff" />
+                      </StackPanel>
+
+                      <TextBlock Grid.Row="1" Text="Underline" VerticalAlignment="Center" Foreground="#a1a1aa" />
+                      <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <CheckBox IsChecked="{Binding Underline}" VerticalAlignment="Center" />
+                        <ColorPicker Color="{Binding UnderlineColor, Converter={StaticResource HexToColor}}"
+                                     IsAlphaVisible="False"
+                                     IsEnabled="{Binding Underline}" HorizontalAlignment="Left" />
+                        <Slider Value="{Binding UnderlineThickness}" Minimum="1" Maximum="10" Width="150"
+                                IsEnabled="{Binding Underline}"
+                                TickFrequency="0.5" IsSnapToTickEnabled="True" />
+                        <TextBlock Text="{Binding UnderlineThickness, StringFormat='{}{0:F1}'}"
+                                   VerticalAlignment="Center" Width="30" Foreground="#ffffff" />
+                      </StackPanel>
+
+                      <WrapPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal">
+                        <CheckBox Content="Bold" IsChecked="{Binding Bold}" Margin="0,0,16,4" />
+                        <CheckBox Content="Italic" IsChecked="{Binding Italic}" Margin="0,0,16,4" />
+                        <CheckBox Content="Strikethrough" IsChecked="{Binding Strikethrough}" />
+                      </WrapPanel>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+              </Expander>
             </StackPanel>
 
             <Border Classes="divider" />
@@ -615,6 +675,19 @@
                   </StackPanel>
                   <CheckBox Content="Mark all states (not just New)" IsChecked="{Binding FrequencyMarkAllStates}" />
                 </StackPanel>
+              </StackPanel>
+            </Border>
+
+            <Border Background="#18181b" BorderBrush="#3f3f46" BorderThickness="1"
+                    CornerRadius="8" Padding="16">
+              <StackPanel Spacing="8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <ToggleSwitch IsChecked="{Binding HighlightLeeches}" />
+                  <TextBlock Text="Leech Highlighting" FontSize="15" FontWeight="Medium"
+                             VerticalAlignment="Center" Foreground="#ffffff" />
+                </StackPanel>
+                <TextBlock Text="Marks words you keep forgetting, using the leech threshold from your Jiten settings"
+                           FontSize="12" Foreground="#71717a" TextWrapping="Wrap" />
               </StackPanel>
             </Border>
 

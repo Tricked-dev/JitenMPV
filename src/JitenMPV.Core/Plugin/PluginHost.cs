@@ -62,6 +62,7 @@ public sealed class PluginHost(
     private volatile SubtitleLineJoiner? _lineJoiner;
     private volatile SubtitleWrapResolver? _wrapResolver;
     private volatile JitenApiClient? _apiClient;
+    private volatile LeechService? _leechService;
     private volatile MpvIpcClient? _ipcClient;
     private volatile KeybindManager? _keybindManager;
     private volatile MiningService? _miningService;
@@ -143,6 +144,8 @@ public sealed class PluginHost(
         _settings = newSettings;
 
         _apiClient?.UpdateConnection(newSettings.ApiKey, newSettings.ApiBaseUrl, newSettings.ApiTimeoutSeconds);
+        if (previous?.ApiKey != newSettings.ApiKey || previous?.ApiBaseUrl != newSettings.ApiBaseUrl)
+            _leechService?.Reset();
 
         var theme = ResolveTheme(newSettings.Theme);
         _styleResolver.UpdateTheme(
@@ -151,7 +154,8 @@ public sealed class PluginHost(
             newSettings.FrequencyMarkingEnabled ? ThemePresets.Frequency : null,
             StyleResolver.BuildBlurStates(newSettings),
             newSettings.BlurStrength,
-            PitchStyleBuilder.Build(newSettings));
+            PitchStyleBuilder.Build(newSettings),
+            newSettings.HighlightLeeches ? ResolveLeechStyle(newSettings) : null);
 
         _renderer.UpdateSettings(newSettings);
         _popupDataBuilder?.UpdateSettings(newSettings);
@@ -186,7 +190,7 @@ public sealed class PluginHost(
             _ = RunSafe(() => plus.RefreshAsync(CancellationToken.None));
 
         var (iPlusOne, freqMarker) = BuildDetectors(newSettings);
-        _colorizer.UpdateDetectors(iPlusOne, freqMarker);
+        _colorizer.UpdateDetectors(iPlusOne, freqMarker, newSettings.HighlightLeeches ? _leechService : null);
 
         if (_keybindManager is not null)
             _ = RunSafe(() => _keybindManager.ConfigureKeybindsAsync(newSettings, CancellationToken.None));
@@ -342,6 +346,11 @@ public sealed class PluginHost(
         logger.LogWarning("Unknown theme '{Theme}', falling back to Default", themeName);
         return ThemePresets.Default;
     }
+
+    private static WordStyleState ResolveLeechStyle(PluginSettings settings)
+        => settings.Theme == "Custom" && settings.CustomThemeColors?.GetValueOrDefault("Leech") is { } custom
+            ? custom.ToOverlayStyle()
+            : ThemePresets.Leech;
 
     private static IReadOnlyDictionary<KnownState, WordStyleState> BuildCustomTheme(
         Dictionary<string, CustomStateStyle> custom)
@@ -503,6 +512,8 @@ public sealed class PluginHost(
         var apiClient = new JitenApiClient(
             settings.ApiKey, settings.ApiBaseUrl, settings.ApiTimeoutSeconds, logger);
         _apiClient = apiClient;
+        var leechService = new LeechService(apiClient, logger);
+        _leechService = leechService;
         var parseCache = new ParseCache(settings.CacheSize);
 
         var theme = ResolveTheme(settings.Theme);
@@ -512,7 +523,8 @@ public sealed class PluginHost(
             settings.FrequencyMarkingEnabled ? ThemePresets.Frequency : null,
             StyleResolver.BuildBlurStates(settings),
             settings.BlurStrength,
-            PitchStyleBuilder.Build(settings));
+            PitchStyleBuilder.Build(settings),
+            settings.HighlightLeeches ? ResolveLeechStyle(settings) : null);
         _styleResolver = styleResolver;
 
         var osd = new OsdState();
@@ -520,7 +532,8 @@ public sealed class PluginHost(
         _renderer = renderer;
 
         var (iPlusOne, freqMarker) = BuildDetectors(settings);
-        var colorizer = new SubtitleColorizer(apiClient, parseCache, renderer, iPlusOne, freqMarker, logger);
+        var colorizer = new SubtitleColorizer(apiClient, parseCache, renderer, iPlusOne, freqMarker, logger,
+            settings.HighlightLeeches ? leechService : null);
         _colorizer = colorizer;
         var timeline = new SubtitleTimeline();
         var preParser = new PreParseService(
@@ -538,8 +551,8 @@ public sealed class PluginHost(
         _blurManager = blurManager;
         var statusOverlay = new StatusOverlay(settings);
         _statusOverlay = statusOverlay;
-        var wordAction = new WordActionService(apiClient, parseCache, statusOverlay, logger);
-        var reviewService = new InlineReviewService(apiClient, parseCache, statusOverlay, logger);
+        var wordAction = new WordActionService(apiClient, parseCache, statusOverlay, logger, leechService);
+        var reviewService = new InlineReviewService(apiClient, parseCache, statusOverlay, logger, leechService);
         var plusService = new JitenPlusService(apiClient, logger);
         _plusService = plusService;
         var pausingReview = reviewPresenter is null

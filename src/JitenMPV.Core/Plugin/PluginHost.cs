@@ -594,6 +594,8 @@ public sealed class PluginHost(
             _episodeTracker = episodeTracker;
             ipcClient.FileLoaded += () => _ = RunSafe(() => LoadEpisodeAsync(ipcClient, episodeTracker, ct));
             ipcClient.FileEnded += reason => episodeTracker.OnEndFile(reason == "eof");
+            var scriptApi = new ScriptApi(ipcClient, apiClient, episodeTracker, statusOverlay, logger);
+            scriptApi.Attach(ct);
 
             popupManager.VisibilityChanged += visible =>
             {
@@ -738,6 +740,10 @@ public sealed class PluginHost(
                 else if (name == EpisodePickerMessage)
                 {
                     _ = RunSafe(() => episodeTracker.OpenPickerAsync(ct));
+                }
+                else if (ScriptApi.IsCommand(name))
+                {
+                    _ = RunSafe(() => scriptApi.HandleAsync(name, args, ct));
                 }
                 else if (name == NavigateSubtitleMessage && args.Length >= 1)
                 {

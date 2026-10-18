@@ -11,6 +11,8 @@ public interface IMediaDeckApi
 
     Task<MediaDeck?> GetDeckAsync(int deckId, CancellationToken ct);
 
+    Task<IReadOnlyList<int>> FindDecksByLinkAsync(int linkType, string id, CancellationToken ct);
+
     Task<DeckEpisodes> GetEpisodesAsync(int deckId, CancellationToken ct);
 
     Task<DeckStatus> GetDeckStatusAsync(int deckId, CancellationToken ct);
@@ -42,6 +44,10 @@ public sealed partial class JitenApiClient : IMediaDeckApi
             $"/api/media-deck/{deckId}/detail?offset=0", "MediaDeckDetail", ct);
         return page?.Data?.MainDeck is { } deck && deck.DeckId == deckId ? deck : null;
     }
+
+    public async Task<IReadOnlyList<int>> FindDecksByLinkAsync(int linkType, string id, CancellationToken ct)
+        => await GetAsync<List<int>>(
+            $"/api/media-deck/by-link-id/{linkType}/{Uri.EscapeDataString(id)}", "DecksByLink", ct) ?? [];
 
     /// Refuses a response whose paging or parentage does not add up: the episode list decides
     /// which decks get written, so a half-read one must never pass for whole.

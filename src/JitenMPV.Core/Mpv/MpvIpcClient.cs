@@ -75,6 +75,10 @@ public sealed class MpvIpcClient(string pipePath, ILogger logger) : IAsyncDispos
     public Task SetPropertyAsync(string propertyName, object value, CancellationToken ct)
         => SendCommandAsync(["set_property", propertyName, value], ct);
 
+    /// Set to null rather than deleted: mpv only tells a user-data observer about the former.
+    public Task ClearUserDataAsync(string propertyName, CancellationToken ct)
+        => SendCommandAsync(["set_property", propertyName, null!], ct);
+
     public async Task<T?> GetPropertyAsync<T>(string propertyName, CancellationToken ct)
     {
         var result = await SendCommandAsync(["get_property", propertyName], ct);
@@ -296,6 +300,9 @@ public sealed class MpvIpcClient(string pipePath, ILogger logger) : IAsyncDispos
 
     public Task SendScriptMessageAsync(string target, string message, IReadOnlyList<string> args, CancellationToken ct)
         => SendCommandAsync(["script-message-to", target, message, .. args], ct);
+
+    public Task BroadcastScriptMessageAsync(string message, string value, CancellationToken ct)
+        => SendCommandAsync(["script-message", message, value], ct);
 
     public Task KeybindAsync(string key, string command, CancellationToken ct)
         => SendCommandAsync(["keybind", key, command], ct);

@@ -6,6 +6,11 @@ using Microsoft.Extensions.Logging;
 
 namespace JitenMPV.Core.Tracking;
 
+public enum MatchSource { Map, Search, Manual, Script }
+
+/// <param name="Match">Null while the file is still being looked up.</param>
+public sealed record TrackedMedia(int Version, MediaIdentity Identity, DeckMatch? Match, MatchSource Source);
+
 public sealed class EpisodeTracker(
     IMediaDeckApi api,
     DeckResolver resolver,
@@ -27,6 +32,7 @@ public sealed class EpisodeTracker(
 
     private MediaIdentity? _identity;
     private DeckMatch? _match;
+    private MatchSource _source;
     private double? _duration;
     private bool _marked;
     private int _fileVersion;
@@ -56,10 +62,32 @@ public sealed class EpisodeTracker(
 
     public DeckMatch? CurrentMatch => _match;
 
+    /// Raised without a match when a file starts resolving, then for every match it gets.
+    public event Action<TrackedMedia>? MatchChanged;
+
+    /// Raised once Jiten reads the episode back as completed, whether this write did it or not.
+    public event Action<TrackedMedia>? EpisodeWatched;
+
+    public TrackedMedia? Current
+    {
+        get
+        {
+            lock (_lock)
+                return _identity is null ? null : new TrackedMedia(_fileVersion, _identity, _match, _source);
+        }
+    }
+
+    public bool IsCurrent(TrackedMedia media)
+    {
+        lock (_lock)
+            return media.Version == _fileVersion && media.Identity == _identity;
+    }
+
     public async Task OnFileLoadedAsync(MediaIdentity? identity, CancellationToken ct)
     {
         CancellationToken token;
         int version;
+        MediaIdentity tracked;
         lock (_lock)
         {
             TaskHelper.CancelAndDispose(ref _fileCts);
@@ -74,9 +102,11 @@ public sealed class EpisodeTracker(
             token = _fileCts.Token;
             version = ++_fileVersion;
             if (_identity is null || !_settings.EpisodeTrackingEnabled) return;
+            tracked = _identity;
         }
 
-        await ResolveAsync(_identity, version, token);
+        MatchChanged?.Invoke(new TrackedMedia(version, tracked, null, MatchSource.Search));
+        await ResolveAsync(tracked, version, token);
     }
 
     public void OnPlayback(double position, double? duration, double speed, double wallSeconds)
@@ -108,7 +138,7 @@ public sealed class EpisodeTracker(
         EpisodeMark mark;
         lock (_lock)
         {
-            if (_marked || !_settings.EpisodeTrackingEnabled) return;
+            if (_marked || !_settings.EpisodeTrackingEnabled || _identity is not { } identity) return;
             if (_match is not { Kind: DeckMatchKind.Matched, Deck: { } deck } match) return;
             if (!match.IsMovie && match.Episode is null) return;
 
@@ -118,11 +148,24 @@ public sealed class EpisodeTracker(
                 _settings.EpisodeTrackingMarkEarlier, _settings.EpisodeTrackingMarkShowCompleted,
                 _settings.EpisodeTrackingKeepShowStatus, null);
             pending.Add(mark);
-            _writes = WriteQueuedAsync(_writes, mark);
+            _writes = WriteQueuedAsync(_writes, mark, new TrackedMedia(_fileVersion, identity, match, _source));
         }
     }
 
-    private async Task WriteQueuedAsync(Task previous, EpisodeMark mark)
+    /// For a script's request; it raises no event, which belongs to the file being played.
+    public Task MarkEpisodeAsync(int deckId, int episode, string title)
+    {
+        var mark = new EpisodeMark(
+            deckId, episode, title, _settings.EpisodeTrackingMarkEarlier,
+            _settings.EpisodeTrackingMarkShowCompleted, _settings.EpisodeTrackingKeepShowStatus, null);
+        lock (_lock)
+        {
+            pending.Add(mark);
+            return _writes = WriteQueuedAsync(_writes, mark, null);
+        }
+    }
+
+    private async Task WriteQueuedAsync(Task previous, EpisodeMark mark, TrackedMedia? media)
     {
         try { await previous; } catch { }
 
@@ -131,6 +174,7 @@ public sealed class EpisodeTracker(
             var changed = await WriteAsync(mark, CancellationToken.None);
             logger.LogInformation("Episode tracking: {Title} episode {Episode} {Outcome}",
                 mark.Title, mark.Episode, changed ? "marked watched" : "was already watched");
+            if (media is not null) EpisodeWatched?.Invoke(media);
             if (changed)
                 await LogAsync(mark.Episode is { } n
                     ? $"Jiten: marked Ep {n} watched"
@@ -259,7 +303,22 @@ public sealed class EpisodeTracker(
         }
 
         if (result.Deck is not { } deck) return;
-        var offset = result.Episode is { } episode ? episode - (identity.Episode ?? 0) : 0;
+        await ApplyChoiceAsync(identity, key, deck, result.Episode, MatchSource.Manual, ct);
+    }
+
+    /// Saved like a choice made in the picker. False when nothing that can be remembered is playing.
+    public async Task<bool> SetMatchAsync(MediaDeck deck, int? episode, CancellationToken ct)
+    {
+        var identity = _identity;
+        if (identity is null || MediaMap.KeyFor(identity) is not { } key) return false;
+        await ApplyChoiceAsync(identity, key, deck, episode, MatchSource.Script, ct);
+        return true;
+    }
+
+    private async Task ApplyChoiceAsync(
+        MediaIdentity identity, string key, MediaDeck deck, int? episode, MatchSource source, CancellationToken ct)
+    {
+        var offset = episode is { } n ? n - (identity.Episode ?? 0) : 0;
         map.Set(key, new MediaMapEntry { DeckId = deck.DeckId, EpisodeOffset = offset, Title = deck.DisplayTitle });
 
         int version;
@@ -270,11 +329,12 @@ public sealed class EpisodeTracker(
             version = _fileVersion;
             token = _fileCts?.Token ?? ct;
         }
-        await ResolveAsync(identity, version, token);
+        await ResolveAsync(identity, version, token, source);
         if (ReachedThreshold(0)) QueueMark();
     }
 
-    private async Task ResolveAsync(MediaIdentity identity, int version, CancellationToken ct)
+    private async Task ResolveAsync(
+        MediaIdentity identity, int version, CancellationToken ct, MatchSource? source = null)
     {
         DeckMatch match;
         try
@@ -287,10 +347,13 @@ public sealed class EpisodeTracker(
             return;
         }
 
+        TrackedMedia media;
         lock (_lock)
         {
             if (version != _fileVersion || _identity != identity) return;
             _match = match;
+            _source = source ?? (match.FromMap ? MatchSource.Map : MatchSource.Search);
+            media = new TrackedMedia(version, identity, match, _source);
         }
 
         logger.LogInformation("Episode tracking: {Title} ep {Episode} -> {Kind} deck {DeckId} ep {DeckEpisode}",
@@ -315,6 +378,7 @@ public sealed class EpisodeTracker(
                 await ShowErrorAsync($"Jiten: no sure match for {identity.Title}{choose}");
                 break;
         }
+        MatchChanged?.Invoke(media);
     }
 
     private Task LogAsync(string message) => NotifyAsync(message, onScreen: false);

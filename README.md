@@ -168,6 +168,51 @@ When a file opens, JitenMPV works out the show and episode from its name and fol
 
 Only confident matches are tracked. When a show is ambiguous or not found, JitenMPV says so on screen; press `Ctrl+E` to choose the deck yourself, set which episode the file is, or stop tracking that folder. Choices are remembered per folder. The threshold and the other options live under Settings > Episode tracking.
 
+## Script messages
+
+Other mpv scripts can use the show JitenMPV matched instead of parsing filenames themselves. This needs episode tracking turned on.
+
+The current file is published as `user-data/jiten/media`, and set to nil when the file ends:
+
+```json
+{ "api": 1, "state": "resolved", "source": "map",
+  "deck_id": 40963, "title": { "original": "葬送のフリーレン", "romaji": "Sousou no Frieren", "english": "..." },
+  "season": 1, "episode": 5, "episode_deck_id": 40968, "episode_count": 28,
+  "links": { "anilist": 154587, "mal": 52991 },
+  "status": "ongoing", "episode_status": "none", "watched": false }
+```
+
+`state` is `resolving`, `resolved`, `ambiguous` or `unmatched`. `source` is `map` (an earlier pick), `search`, `manual` (picked just now) or `script`. Only `search` is a guess the user has not confirmed. Statuses are `none`, `planning`, `ongoing`, `completed` or `dropped`.
+
+`links` holds the ids Jiten has for the show: `anilist` and `mal`, and for dramas and films `tmdb`, written `tv:<id>` or `movie:<id>`.
+
+JitenMPV broadcasts these, each with a JSON argument:
+
+- `jiten-media-resolved`, with the object above
+- `jiten-episode-watched`, the same object, once Jiten has the episode as completed
+- `jiten-match-ambiguous`, with the `candidates` it could not choose between
+
+And listens for:
+
+- `jiten-media-set <anilist:ID|mal:ID|deck:ID> [episode]` matches the current file, saved like a pick from the picker
+- `jiten-media-rematch` opens the picker
+- `jiten-lookup <reply-to> <request-id> <anilist:ID|mal:ID|deck:ID>` replies with `script-message-to <reply-to> jiten-reply <request-id> <json>`
+- `jiten-deck-status <deck> <status>` and `jiten-mark-episode <deck> <episode>` change your Jiten list
+
+```lua
+local utils = require "mp.utils"
+
+mp.register_script_message("jiten-episode-watched", function(json)
+    local media = utils.parse_json(json)
+    if media.links.anilist then
+        mp.msg.info("watched AniList " .. media.links.anilist .. " episode " .. media.episode)
+    end
+end)
+
+mp.commandv("script-message", "jiten-lookup", mp.get_script_name(), "1", "anilist:154587")
+mp.register_script_message("jiten-reply", function(id, json) print(id, json) end)
+```
+
 ## Development
 
 `test-mpv.bat <video>` builds the solution and launches mpv with the script and binary from the working tree.

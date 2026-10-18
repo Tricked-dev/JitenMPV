@@ -20,6 +20,8 @@ public sealed record DeckMatch(
     IReadOnlyList<DeckCandidate> Candidates)
 {
     public bool IsMovie => Deck is { ChildrenDeckCount: 0 } or { MediaType: MediaDeck.Movie };
+
+    public bool FromMap { get; init; }
 }
 
 public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
@@ -41,7 +43,7 @@ public sealed partial class DeckResolver(IMediaDeckApi api, MediaMap map)
             if (entry.DeckId is { } id && await api.GetDeckAsync(id, ct) is { } mapped)
             {
                 int? episode = mapped.ChildrenDeckCount == 0 ? null : (identity.Episode ?? 0) + entry.EpisodeOffset;
-                return new DeckMatch(DeckMatchKind.Matched, mapped, episode is > 0 ? episode : null, []);
+                return new DeckMatch(DeckMatchKind.Matched, mapped, episode is > 0 ? episode : null, []) { FromMap = true };
             }
         }
 

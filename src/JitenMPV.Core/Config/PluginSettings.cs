@@ -38,6 +38,9 @@ public sealed class PluginSettings
     [JsonPropertyName("subtitle_single_line")]
     public bool SubtitleSingleLine { get; set; }
 
+    [JsonPropertyName("convert_halfwidth_katakana")]
+    public bool ConvertHalfWidthKatakana { get; set; } = true;
+
     [JsonPropertyName("theme")]
     public string Theme { get; set; } = "Default";
 

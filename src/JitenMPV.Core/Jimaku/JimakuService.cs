@@ -23,7 +23,8 @@ public sealed partial class JimakuService : IDisposable
     private static readonly TimeSpan TrackPollInterval = TimeSpan.FromMilliseconds(500);
     private const int TrackPollAttempts = 20;
 
-    /// Jimaku allows 25 requests a minute; title retries have to leave room for the file listings.
+    /// Per kind of search. Jimaku allows 25 requests a minute; title retries have to leave room for
+    /// the file listings.
     private const int MaxSearchRequests = 5;
 
     private const int NoticeDurationMs = 5000;
@@ -278,7 +279,7 @@ public sealed partial class JimakuService : IDisposable
         if (!_client.HasKey || queries.Count == 0) return ([], 0);
         try
         {
-            var entries = await FindEntriesAsync(queries, identity?.Season, ct);
+            var entries = await FindEntriesAsync(queries, identity?.Season, identity?.Episode, ct);
             if (entries.Count == 0) return ([], 0);
             var files = await _client.GetFilesAsync(entries[0].Id, identity?.Episode, ct);
             var usable = JimakuFileRanker.Rank(files, f => f.Name, identity?.Episode, identity?.TitleSource).Count;
@@ -381,7 +382,7 @@ public sealed partial class JimakuService : IDisposable
         var label = episode is { } ep ? $"{queries[0]} ep {ep}" : queries[0];
         await NotifyAsync($"Jimaku: searching {label}", false, ct);
 
-        var entries = await FindEntriesAsync(queries, season, ct);
+        var entries = await FindEntriesAsync(queries, season, episode, ct);
         if (entries.Count == 0)
         {
             await NotifyAsync($"Jimaku: nothing found for {queries[0]}", userInitiated, ct);
@@ -428,29 +429,33 @@ public sealed partial class JimakuService : IDisposable
     }
 
     /// The plausible entries of the first query that has any, followed by the rest of that
-    /// search's results so the next key can still reach them.
+    /// search's results so the next key can still reach them. Live action is searched only when no
+    /// anime entry fits, so anime matches stay as they were.
     private async Task<List<JimakuEntry>> FindEntriesAsync(
-        List<string> queries, int? season, CancellationToken ct)
+        List<string> queries, int? season, int? episode, CancellationToken ct)
     {
-        var requests = 0;
-        foreach (var query in queries)
+        foreach (var anime in new[] { true, false })
         {
-            if (requests >= MaxSearchRequests) break;
-            requests++;
-            var results = await _client.SearchAsync(query, ct);
-
-            var cleaned = Whitespace().Replace(AsciiPunctuation().Replace(query, " "), " ").Trim();
-            if (results.Count == 0 && cleaned != query && cleaned.Length > 0 && requests < MaxSearchRequests)
+            var requests = 0;
+            foreach (var query in queries)
             {
+                if (requests >= MaxSearchRequests) break;
                 requests++;
-                results = await _client.SearchAsync(cleaned, ct);
-            }
+                var results = await _client.SearchAsync(query, anime, ct);
 
-            var ranked = JimakuEntryMatcher.Rank(results, query, season);
-            _logger.LogInformation("Jimaku search '{Query}': {Count} entries, {Plausible} plausible",
-                query, results.Count, ranked.Count);
-            if (ranked.Count > 0)
-                return [.. ranked, .. results.Where(r => !ranked.Contains(r))];
+                var cleaned = Whitespace().Replace(AsciiPunctuation().Replace(query, " "), " ").Trim();
+                if (results.Count == 0 && cleaned != query && cleaned.Length > 0 && requests < MaxSearchRequests)
+                {
+                    requests++;
+                    results = await _client.SearchAsync(cleaned, anime, ct);
+                }
+
+                var ranked = JimakuEntryMatcher.Rank(results, query, season, episode);
+                _logger.LogInformation("Jimaku {Kind} search '{Query}': {Count} entries, {Plausible} plausible",
+                    anime ? "anime" : "live action", query, results.Count, ranked.Count);
+                if (ranked.Count > 0)
+                    return [.. ranked, .. results.Where(r => !ranked.Contains(r))];
+            }
         }
         return [];
     }

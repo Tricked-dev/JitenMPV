@@ -15,6 +15,18 @@ public sealed class JimakuEntry
 
     [JsonPropertyName("japanese_name")]
     public string? JapaneseName { get; set; }
+
+    [JsonPropertyName("flags")]
+    public JimakuEntryFlags Flags { get; set; } = new();
+}
+
+public sealed class JimakuEntryFlags
+{
+    [JsonPropertyName("anime")]
+    public bool Anime { get; set; } = true;
+
+    [JsonPropertyName("movie")]
+    public bool Movie { get; set; }
 }
 
 public sealed class JimakuFile

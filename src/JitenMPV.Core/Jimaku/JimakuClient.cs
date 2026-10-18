@@ -59,9 +59,9 @@ public sealed class JimakuClient
 
     public bool HasKey => _apiKey is not null;
 
-    public Task<List<JimakuEntry>> SearchAsync(string query, CancellationToken ct)
+    public Task<List<JimakuEntry>> SearchAsync(string query, bool anime, CancellationToken ct)
         => GetJsonAsync<List<JimakuEntry>>(
-            $"entries/search?anime=true&query={Uri.EscapeDataString(query)}", ct);
+            $"entries/search?anime={(anime ? "true" : "false")}&query={Uri.EscapeDataString(query)}", ct);
 
     /// Any authenticated request tells whether the key works; one entry is the smallest answer, and
     /// a missing entry still means the key was accepted.

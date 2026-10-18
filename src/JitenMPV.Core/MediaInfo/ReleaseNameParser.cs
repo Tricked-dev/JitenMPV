@@ -20,12 +20,16 @@ public static partial class ReleaseNameParser
     private static readonly Regex[] ReleaseTags =
     [
         new(@"\[.*?\]"), new(@"\(.*?\)"),
-        new(@"(?<![A-Za-z0-9])(?:2160|1080|720|576|480|360)[pP](?![A-Za-z0-9])"),
+        new(@"(?<![A-Za-z0-9])(?:2160|1080|720|576|480|360)[pPiI](?![A-Za-z0-9])"),
         new(@"(?<!\d)\d{3,4}x\d{3,4}(?!\d)"), new(@"[xX]26[45]"), new(@"(?<![A-Za-z0-9])[hH]\.?26[45]"),
         new(@"[bB]lu-?[rR]ay"), new("Hi10P"), new("FLAC"), new("AAC"), new("OPUS"), new("AV1"),
         new("Dual Audio"), new("HEVC"), new("WEB-DL"), new("WEBRip"),
         new(@"(?<![A-Za-z0-9])(?:10|8)[- ]?[bB]it(?![A-Za-z])"),
         new(@"(?<![A-Za-z0-9])(?:NF|AMZN|CR|DSNP|HIDIVE|ADN|B-Global)(?![A-Za-z0-9])"),
+        new(@"(?<![A-Za-z0-9])(?:Netflix|Amazon|Hulu|U-NEXT|WEBDL|HDTV|DVDRip|REMUX)(?![A-Za-z0-9])",
+            RegexOptions.IgnoreCase),
+        new(@"[-\s]*(?<!\d)(?:19|20)\d\d([-.])[01]\d\1[0-3]\d(?!\d)(?:-[A-Za-z][A-Za-z0-9]*(?=\.\w{2,4}$|$))?"),
+        new("「[^」]*」"),
         new(@"\.(?:mkv|mp4|avi|webm|m4v|mov|ts|m2ts|wmv|flv|ogm|3gp)$", RegexOptions.IgnoreCase),
     ];
 
@@ -38,7 +42,7 @@ public static partial class ReleaseNameParser
         new(@"\s(\d{1,3}|(?!19|20)\d{4})(?:[vV]\d+)?\s*-\s*[A-Za-z]"), new(@" - (\d+)[vV]?\d*(?![\d\p{L}])"),
         new(@"\[(\d\d?)\]"), new(@"\[(\d\d?)[vV]\d+\]"),
         new(@"(?<![A-Za-z0-9])[Ee][Pp]?(\d+)(?!\d)"),
-        new(@"第([0-9０-９]+)話"), new(@"(?<!\S)#(\d+)(?!\d)"),
+        new(@"第([0-9０-９]+)話"), new(@"(?<!\S)[#＃]([0-9０-９]+)(?![0-9０-９])"), new("（([0-9０-９]{1,3})）"),
         new(@"(?<=\p{L}_)(\d{2,3})(?:[vV]\d+)?(?:\.[A-Za-z0-9]{2,4})?$"),
     ];
 
@@ -94,7 +98,7 @@ public static partial class ReleaseNameParser
 
     internal static string Sanitize(string text)
     {
-        text = text.Replace('【', ' ').Replace('】', ' ');
+        text = LaterLenticular().Replace(text, " ").Replace('【', ' ').Replace('】', ' ');
         foreach (var tag in ReleaseTags)
             text = tag.Replace(text, " ");
         return Whitespace().Replace(SeparatorChars().Replace(text, " "), " ").Trim();
@@ -141,8 +145,10 @@ public static partial class ReleaseNameParser
         else
         {
             Regex[] patterns = [TitleBeforeSxxEyy(), TitleBeforeNxM(), TitleBeforeEpisodeCode(),
-                TitleBeforeJapaneseEpisode(), TitleBeforeHashEpisode()];
+                TitleBeforeJapaneseEpisode(), TitleBeforeHashEpisode(), TitleBeforeParenEpisode()];
             title = FirstGroup(clean, keepTrailingNumber ? patterns : [.. patterns, TitleBeforeTrailingNumber()]) ?? clean;
+            if (title.Length == 0 && TitleAfterEpisodeCode().Match(clean) is { Success: true } after)
+                title = after.Groups[1].Value;
         }
 
         title = TrimTitle(title);
@@ -297,8 +303,18 @@ public static partial class ReleaseNameParser
     [GeneratedRegex(@"^(.*?)\s*第[0-9０-９]+話")]
     private static partial Regex TitleBeforeJapaneseEpisode();
 
-    [GeneratedRegex(@"^(.*?)\s*(?<!\S)#\d+(?!\d)")]
+    [GeneratedRegex(@"^(.*?)\s*(?<!\S)[#＃][0-9０-９]+(?![0-9０-９])")]
     private static partial Regex TitleBeforeHashEpisode();
+
+    [GeneratedRegex(@"^(.*?)\s*（[0-9０-９]{1,3}）")]
+    private static partial Regex TitleBeforeParenEpisode();
+
+    [GeneratedRegex(@"^[Ee][Pp]?\.?\s*\d+\s*-?\s*(.+)$")]
+    private static partial Regex TitleAfterEpisodeCode();
+
+    /// A 【】 block right after a title is a channel or broadcast note; one at the start can be the title.
+    [GeneratedRegex(@"(?<=[^\s\]\)】]\s*)【[^】]*】")]
+    private static partial Regex LaterLenticular();
 
     [GeneratedRegex(@"^(.*?)\s*-?\s*\d+[vV]?\d*\s*$")]
     private static partial Regex TitleBeforeTrailingNumber();

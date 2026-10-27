@@ -29,6 +29,7 @@ public sealed class PluginHost(
     internal const int UnderlineOverlayId = 2;
     internal const int HitboxDebugOverlayId = 3;
     internal const string OpenSettingsMessage = "jiten-open-settings";
+    internal const string StopMessage = "jiten-stop";
     internal const string ToggleSubtitlesMessage = "jiten-toggle-subtitles";
     internal const string NavigateSubtitleMessage = "jiten-nav-sub";
     private const string LuaScriptName = "jiten_mpv";
@@ -63,6 +64,8 @@ public sealed class PluginHost(
     private volatile JitenPlusService? _plusService;
     private volatile MediaCaptureCoordinator? _mediaCapture;
     private volatile bool _wasPausedBeforeSettings;
+    private volatile bool _playbackPauseActive;
+    private Task _pausePlaybackTask = Task.CompletedTask;
     private volatile bool _subtitlesVisible = true;
     private readonly SemaphoreSlim _subtitleVisibilityLock = new(1, 1);
 
@@ -94,30 +97,34 @@ public sealed class PluginHost(
 
     public void PausePlayback()
     {
-        if (_ipcClient is null) return;
+        var ipc = _ipcClient;
+        if (ipc is null || _shuttingDown) return;
+        _playbackPauseActive = true;
         _autopause?.SuspendRelease();
-        _ = TaskHelper.RunSafe(async () =>
+        _pausePlaybackTask = TaskHelper.RunSafe(async () =>
         {
-            var paused = await _ipcClient.GetPropertyAsync<bool>("pause", CancellationToken.None);
+            var paused = await ipc.GetPropertyAsync<bool>("pause", CancellationToken.None);
             _wasPausedBeforeSettings = paused;
             if (!paused)
-                await _ipcClient.SetPropertyAsync("pause", true, CancellationToken.None);
+                await ipc.SetPropertyAsync("pause", true, CancellationToken.None);
         }, logger, "Pause playback");
     }
 
     public void ResumePlayback()
     {
         var ipc = _ipcClient;
-        if (ipc is null) return;
+        if (ipc is null || _shuttingDown) return;
 
         var autopause = _autopause;
         _ = TaskHelper.RunSafe(async () =>
         {
+            await _pausePlaybackTask;
             if (!_wasPausedBeforeSettings)
                 await ipc.SetPropertyAsync("pause", false, CancellationToken.None);
 
             if (autopause is not null)
                 await autopause.ResumeReleaseAsync(ipc, CancellationToken.None);
+            _playbackPauseActive = false;
         }, logger, "Resume playback");
     }
 
@@ -454,12 +461,16 @@ public sealed class PluginHost(
 
     public async Task RunAsync(PluginSettings? preloaded, CancellationToken ct)
     {
+        using var lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var readCts = new CancellationTokenSource();
+        ct = lifetimeCts.Token;
+        Task? readLoop = null;
         logger.LogInformation("JitenMPV starting, pipe: {Path}", pipePath);
 
         var settings = preloaded ?? await SettingsManager.LoadAsync(ct);
         _settings = settings;
 
-        // Ctrl+J is bound over IPC further down, so aborting here would remove the only way to fix
+        // Ctrl+J is bound by Lua once connected, so aborting here would remove the only way to fix
         // the problem being reported. ReloadSettings picks the key up live once it is set.
         if (string.IsNullOrEmpty(settings.ApiKey))
         {
@@ -707,7 +718,12 @@ public sealed class PluginHost(
 
             ipcClient.ScriptMessageReceived += (name, args) =>
             {
-                if (name == OpenSettingsMessage)
+                if (name == StopMessage)
+                {
+                    _shuttingDown = true;
+                    lifetimeCts.Cancel();
+                }
+                else if (name == OpenSettingsMessage)
                 {
                     logger.LogInformation("Received {Message}", OpenSettingsMessage);
                     OpenSettingsRequested?.Invoke();
@@ -730,7 +746,8 @@ public sealed class PluginHost(
                 }
             };
 
-            var readLoop = ipcClient.RunAsync(ct);
+            // Cleanup also sends commands and needs their replies after the plugin is cancelled.
+            readLoop = ipcClient.RunAsync(readCts.Token);
 
             await ipcClient.ChangeListAsync("watch-later-options", "remove", "sub-visibility", ct);
             await ipcClient.SetPropertyAsync("sub-visibility", "no", ct);
@@ -777,10 +794,7 @@ public sealed class PluginHost(
             logger.LogInformation("IPC client name: {Name}", clientName);
             if (clientName is not null)
             {
-                await ipcClient.KeybindAsync("Ctrl+j",
-                    $"script-message-to {clientName} {OpenSettingsMessage}", ct);
-
-                // The Lua side addresses this process by name for the settings button, and treats
+                // The Lua side addresses this process by name for settings controls, and treats
                 // not knowing the name as "no plugin to open settings for".
                 await ipcClient.SendScriptMessageAsync(LuaScriptName, "jiten-set-client", clientName, ct);
             }
@@ -806,12 +820,12 @@ public sealed class PluginHost(
             _ = RunSafe(() => ShowStartupNoticesAsync(ipcClient, settings, ct));
 
             logger.LogInformation("JitenMPV plugin running.");
-            await readLoop;
+            await readLoop.WaitAsync(ct);
             logger.LogWarning("Read loop exited");
         }
         catch (OperationCanceledException)
         {
-            logger.LogWarning("RunAsync cancelled");
+            logger.LogInformation("RunAsync cancelled");
         }
         catch (IOException ex)
         {
@@ -824,6 +838,7 @@ public sealed class PluginHost(
         finally
         {
             _shuttingDown = true;
+            await lifetimeCts.CancelAsync();
             try
             {
                 using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -832,12 +847,31 @@ public sealed class PluginHost(
                 await ipcClient.RemoveOverlayAsync(UnderlineOverlayId, cct);
                 await ipcClient.RemoveOverlayAsync(HitboxDebugOverlayId, cct);
                 await ipcClient.RemoveOverlayAsync(StatusOverlay.StatusLayerId, cct);
+                await popupPresenter.HideAsync(cct);
+                await _pausePlaybackTask.WaitAsync(cct);
+                if (_playbackPauseActive)
+                {
+                    if (!_wasPausedBeforeSettings)
+                        await ipcClient.SetPropertyAsync("pause", false, cct);
+                    await autopause.ResumeReleaseAsync(ipcClient, cct);
+                    _playbackPauseActive = false;
+                }
+                await autopause.OnHoverLeaveAsync(ipcClient, cct);
                 await ipcClient.SendScriptMessageAsync(
                     LuaScriptName, "jiten-set-client", "", cct);
                 if (overlaySurface is { } surface)
                     await surface.ShutdownAsync().WaitAsync(cct);
             }
             catch { }
+
+            _ipcClient = null;
+            await readCts.CancelAsync();
+            if (readLoop is not null)
+            {
+                try { await readLoop; }
+                catch (OperationCanceledException) { }
+                catch (IOException) { }
+            }
 
             statusOverlay.Dispose();
             plusService.Dispose();

@@ -244,7 +244,7 @@ sealed class Program
                 try
                 {
                     await host.RunAsync(preloadSettings, cts.Token);
-                    logger.LogWarning("RunAsync completed normally (unexpected)");
+                    logger.LogInformation("JitenMPV plugin stopped.");
                 }
                 catch (Exception ex)
                 {

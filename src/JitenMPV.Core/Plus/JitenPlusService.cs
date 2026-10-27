@@ -143,6 +143,7 @@ public sealed class JitenPlusService : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
-        _refreshLock.Dispose();
+        // An in-flight refresh still releases this lock after cancellation during plugin shutdown.
+        // SemaphoreSlim has no unmanaged resource here, so let it be collected with the service.
     }
 }

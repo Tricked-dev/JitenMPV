@@ -94,6 +94,12 @@ if not is_windows then
 end
 
 local plugin_started = false
+local plugin_enabled = startup.autostart
+local plugin_stopping = false
+local plugin_command = nil
+local stop_timer = nil
+local keybind_config = {}
+local keybinds_active = false
 
 -- The plugin hides mpv's own subtitles for as long as it is drawing its coloured ones. If it dies
 -- the overlay dies with it, so without this the rest of the session plays with no subtitles at all.
@@ -405,6 +411,11 @@ local forced_section = "input_forced_" .. mp.get_script_name()
 -- the first time the popup toggles its keybinds. Restricting the section to what this script draws
 -- makes mpv skip it for clicks elsewhere, which leaves the seek bar working whatever the order is.
 local function apply_mouse_area()
+    if not bar.client then
+        mp.set_mouse_area(0, 0, 0, 0, forced_section)
+        return
+    end
+
     if popup_click_dismiss or not hit_bounds_supported or osd_height <= 0 then
         mp.set_mouse_area(0, 0, osd_width, osd_height, forced_section)
         return
@@ -576,17 +587,49 @@ function bar_refresh(relayout)
     bar_render()
 end
 
+local function reset_keybinds()
+    if keybinds_active then
+        for action in pairs(keybind_config) do
+            mp.remove_key_binding("jiten-kb-" .. action)
+        end
+        keybinds_active = false
+    end
+    keybind_config = {}
+end
+
 local function set_plugin_client(name)
-    local was_connected = bar.client ~= nil
     bar.client = (name ~= nil and name ~= "") and name or nil
     local connected = bar.client ~= nil
     if not connected then
         hit_bounds = nil
         hit_bounds_supported = false
         popup_click_dismiss = false
-        if was_connected then mp.set_property_bool("sub-visibility", true) end
+        click_forwarded = false
+        bar.press_consumed = false
+        reset_keybinds()
+        if loop.enabled then
+            loop.enabled = false
+            loop_clear()
+        end
+        if sub_visibility_before_plugin then
+            mp.set_property("sub-visibility", sub_visibility_before_plugin)
+            sub_visibility_before_plugin = nil
+        end
+        if mp.get_opt("jiten_external") then
+            plugin_started = false
+            plugin_stopping = false
+        end
+    elseif plugin_stopping then
+        -- F10 can be pressed before the process has connected. Stop it as soon as it can listen.
+        mp.commandv("script-message-to", bar.client, "jiten-stop")
     end
     set_nav_keys_bound(connected)
+    mp.remove_key_binding("jiten-open-settings")
+    if connected then
+        mp.add_key_binding("Ctrl+j", "jiten-open-settings", function()
+            if bar.client then mp.commandv("script-message-to", bar.client, "jiten-open-settings") end
+        end)
+    end
     bar_refresh()
     apply_mouse_area()
 end
@@ -628,7 +671,7 @@ local function report_plugin_exit(spawned_at, result, err)
 end
 
 local function initialize()
-    if plugin_started then return end
+    if not plugin_enabled or plugin_started then return end
 
     local ipc_path = mp.get_property("input-ipc-server")
     if not ipc_path or ipc_path == "" then
@@ -641,6 +684,7 @@ local function initialize()
     end
 
     plugin_started = true
+    sub_visibility_before_plugin = mp.get_property("sub-visibility")
 
     -- test-mpv.bat starts the plugin itself on this pipe; a second instance would fight it for
     -- the connection. The latch stays set so mouse tracking still reports events.
@@ -651,23 +695,49 @@ local function initialize()
 
     local exe = get_exe_path()
     local spawned_at = mp.get_time()
-    sub_visibility_before_plugin = mp.get_property("sub-visibility")
     mp.msg.info("Spawning JitenMPV: " .. exe .. " plugin " .. ipc_path)
     -- Not detached: the exit callback is the only way to learn the plugin died, and without
     -- clearing the latch neither file-loaded nor F10 could ever respawn it.
-    mp.command_native_async({
+    plugin_command = mp.command_native_async({
         name = "subprocess",
         playback_only = false,
         args = { exe, "plugin", ipc_path, mpv_wayland_app_id or "" }
     }, function(success, result, err)
+        local was_stopping = plugin_stopping
         plugin_started = false
-        set_plugin_client(nil)
-        if sub_visibility_before_plugin then
-            mp.set_property("sub-visibility", sub_visibility_before_plugin)
-            sub_visibility_before_plugin = nil
+        plugin_stopping = false
+        plugin_command = nil
+        if stop_timer then
+            stop_timer:kill()
+            stop_timer = nil
         end
-        report_plugin_exit(spawned_at, success and result or nil, err)
+        set_plugin_client(nil)
+        if was_stopping then
+            -- Re-enable only after the previous process has released its overlays and IPC client.
+            if plugin_enabled then initialize() end
+        else
+            report_plugin_exit(spawned_at, success and result or nil, err)
+        end
     end)
+end
+
+local function toggle_plugin()
+    if not plugin_started then
+        plugin_enabled = true
+        initialize()
+        return
+    end
+
+    plugin_enabled = not plugin_enabled
+    if plugin_enabled or plugin_stopping then return end
+    plugin_stopping = true
+    if bar.client then mp.commandv("script-message-to", bar.client, "jiten-stop") end
+    if plugin_command then
+        -- A hung process, including one stuck before connecting, must still be switchable off.
+        stop_timer = mp.add_timeout(8, function()
+            if plugin_command then mp.abort_async_command(plugin_command) end
+        end)
+    end
 end
 
 -- Addressed to the plugin this script started, not broadcast: a second plugin process on the same
@@ -814,7 +884,7 @@ else
 end
 
 -- Bound in both modes: it is also how a plugin that died mid-session is brought back.
-mp.add_key_binding(startup.start_key, "jiten-mpv-toggle", initialize)
+mp.add_key_binding(startup.start_key, "jiten-mpv-toggle", toggle_plugin)
 
 resolve_fallbacks()
 mp.add_forced_key_binding("MBTN_LEFT", "jiten-mouse-left", on_mouse_left, { complex = true })
@@ -936,22 +1006,11 @@ mp.register_script_message("jiten-jimaku-prompt", function(default_text, mode)
 end)
 
 -- Keybind system
-local keybind_config = {}
-local keybinds_active = false
-
 mp.register_script_message("jiten-set-keybind", function(action, key)
     keybind_config[action] = key
 end)
 
-mp.register_script_message("jiten-reset-keybinds", function()
-    if keybinds_active then
-        for action, _ in pairs(keybind_config) do
-            mp.remove_key_binding("jiten-kb-" .. action)
-        end
-        keybinds_active = false
-    end
-    keybind_config = {}
-end)
+mp.register_script_message("jiten-reset-keybinds", reset_keybinds)
 
 mp.register_script_message("jiten-enable-keybinds", function()
     if keybinds_active then return end

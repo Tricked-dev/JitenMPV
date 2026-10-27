@@ -1300,10 +1300,10 @@
               <TextBlock Text="STARTUP" Classes="section-header" />
               <CheckBox Content="Start automatically when a file is opened"
                         IsChecked="{Binding PluginAutostart}" />
-              <TextBlock Text="Turn this off to keep subtitles untouched until you ask for them. The key below starts JitenMPV either way, and also restarts it if it stops."
+              <TextBlock Text="Turn this off to keep subtitles untouched until you ask for them. The key below toggles JitenMPV on or off. Once switched off, it stays off across files until you switch it on again."
                          FontSize="11" Foreground="#71717a" TextWrapping="Wrap" />
               <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBlock Text="Start key" Classes="field-label" />
+                <TextBlock Text="Toggle key" Classes="field-label" />
                 <TextBox Text="{Binding PluginStartKey}" Width="120" PlaceholderText="F10" />
               </StackPanel>
               <TextBlock Text="An mpv key name, such as F10, Ctrl+j or ALT+s. Takes effect when mpv restarts."

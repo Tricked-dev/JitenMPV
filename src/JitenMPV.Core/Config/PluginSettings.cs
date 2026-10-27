@@ -417,7 +417,7 @@ public sealed class PluginSettings
     [JsonPropertyName("plugin_autostart")]
     public bool PluginAutostart { get; set; } = true;
 
-    /// Key that starts the plugin manually. Bound whether or not autostart is on, so a crashed
+    /// Key that toggles the plugin on or off. Bound whether or not autostart is on, so a crashed
     /// plugin can always be brought back.
     [JsonPropertyName("plugin_start_key")]
     public string PluginStartKey { get; set; } = "F10";

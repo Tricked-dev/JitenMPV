@@ -112,7 +112,7 @@ public sealed class EpisodeTracker(
             _match = null;
             _duration = null;
             _marked = false;
-            _identity = identity is null || identity.IsExtra || (identity.IsStream && identity.Episode is null)
+            _identity = identity is null || identity.IsExtra
                 ? null
                 : identity;
             _fileCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

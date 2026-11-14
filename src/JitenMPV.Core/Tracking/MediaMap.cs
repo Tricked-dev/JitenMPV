@@ -17,6 +17,9 @@ public sealed class MediaMapEntry
     [JsonPropertyName("ignore")]
     public bool Ignore { get; set; }
 
+    [JsonPropertyName("subtitle_preference")]
+    public SubtitlePreference SubtitlePreference { get; set; }
+
     [JsonPropertyName("title")]
     public string? Title { get; set; }
 }

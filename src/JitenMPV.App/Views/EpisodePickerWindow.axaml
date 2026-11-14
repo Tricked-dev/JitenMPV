@@ -1,10 +1,11 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:JitenMPV.App.ViewModels"
+        xmlns:tracking="using:JitenMPV.Core.Tracking"
         x:Class="JitenMPV.App.Views.EpisodePickerWindow"
         x:DataType="vm:EpisodePickerViewModel"
-        Title="Episode tracking"
-        Width="560" Height="600"
+        Title="Show and subtitles"
+        Width="560" Height="810"
         MinWidth="440" MinHeight="420"
         Topmost="True"
         ShowInTaskbar="False"
@@ -33,10 +34,10 @@
     </Style>
   </Window.Styles>
 
-  <Grid Margin="20" RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="12">
+  <Grid Margin="20" RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" RowSpacing="12">
 
     <StackPanel Spacing="4">
-      <TextBlock Text="Which Jiten show is this?" FontSize="18" FontWeight="Bold" Foreground="#ffffff" />
+      <TextBlock Text="Show and subtitle preferences" FontSize="18" FontWeight="Bold" Foreground="#ffffff" />
       <TextBlock Text="{Binding FileTitle}" FontSize="13" Foreground="#a1a1aa" TextWrapping="Wrap" />
     </StackPanel>
 
@@ -79,7 +80,25 @@
                      FormatString="0" Width="140" />
     </StackPanel>
 
-    <Grid Grid.Row="4" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
+    <StackPanel Grid.Row="4" Spacing="6">
+      <TextBlock Text="SUBTITLES FOR THIS SHOW" Classes="section-header" />
+      <ListBox ItemsSource="{Binding Subtitles}" SelectedItem="{Binding SelectedSubtitle}"
+               MaxHeight="120" Background="#0F0F12" CornerRadius="6">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="tracking:SubtitleSuggestion">
+            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" FontSize="12" />
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+      <TextBlock Text="{Binding SubtitleStatus}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
+      <TextBlock Text="SUBTITLE STYLE" Classes="section-header" />
+      <ComboBox ItemsSource="{Binding SubtitlePreferences}" SelectedIndex="{Binding SubtitlePreferenceIndex}"
+                HorizontalAlignment="Stretch" />
+      <TextBlock Text="K cycles subtitles for this show. The choice is remembered for this series."
+                 TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
+    </StackPanel>
+
+    <Grid Grid.Row="5" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
       <Button Content="Don't track this folder" Classes="secondary" Command="{Binding IgnoreFolderCommand}" />
       <Button Grid.Column="2" Content="Cancel" Classes="secondary" IsCancel="True"
               Command="{Binding CancelCommand}" />

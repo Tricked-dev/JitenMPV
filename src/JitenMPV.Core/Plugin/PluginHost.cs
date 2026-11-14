@@ -649,8 +649,10 @@ public sealed class PluginHost(
             ipcClient.FileEnded += reason => episodeTracker.OnEndFile(reason == "eof");
             var scriptApi = new ScriptApi(ipcClient, apiClient, episodeTracker, statusOverlay, logger);
             scriptApi.Attach(ct);
-            using var jimaku = new JimakuService(ipcClient, statusOverlay, settings, logger);
+            using var jimaku = new JimakuService(ipcClient, statusOverlay, settings, logger,
+                preferredShow: () => episodeTracker.SubtitleChoice);
             _jimaku = jimaku;
+            episodeTracker.FindSubtitles = jimaku.FindSubtitlesAsync;
 
             popupManager.VisibilityChanged += visible =>
             {
@@ -804,7 +806,13 @@ public sealed class PluginHost(
                 }
                 else if (name == EpisodePickerMessage)
                 {
-                    _ = RunSafe(() => episodeTracker.OpenPickerAsync(ct));
+                    _ = RunSafe(async () =>
+                    {
+                        var previous = episodeTracker.SubtitleChoice;
+                        await episodeTracker.OpenPickerAsync(ct);
+                        if (episodeTracker.SubtitleChoice is { } next && (next != previous || episodeTracker.SelectedSubtitleUrl is not null))
+                            await jimaku.RefreshSelectionAsync(ct, episodeTracker.SelectedSubtitleUrl);
+                    });
                 }
                 else if (ScriptApi.IsCommand(name))
                 {

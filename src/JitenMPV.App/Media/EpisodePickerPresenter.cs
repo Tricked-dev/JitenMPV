@@ -35,6 +35,7 @@ public sealed class EpisodePickerPresenter : IEpisodePickerPresenter
             };
             window.Closed += (_, _) =>
             {
+                vm.StopSubtitleSearch();
                 _open = null;
                 completion.TrySetResult(null);
             };

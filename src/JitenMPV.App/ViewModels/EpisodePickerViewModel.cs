@@ -64,6 +64,7 @@ public partial class EpisodePickerViewModel : ViewModelBase
 {
     private readonly EpisodePickerData _data;
     private CancellationTokenSource? _searchCts;
+    private CancellationTokenSource? _subtitleCts;
 
     public event Action<EpisodePickerResult?>? Completed;
 
@@ -72,6 +73,7 @@ public partial class EpisodePickerViewModel : ViewModelBase
         _data = data;
         FileTitle = data.FileTitle;
         Episode = data.Episode;
+        SubtitlePreferenceIndex = (int)data.SubtitlePreference;
         SearchText = data.FileTitle;
         ShowCandidates(data.Candidates);
         Selected = data.CurrentDeckId is { } id
@@ -90,10 +92,50 @@ public partial class EpisodePickerViewModel : ViewModelBase
     [ObservableProperty] private string _searchText = "";
     [ObservableProperty] private decimal? _episode;
     [ObservableProperty] private string _status = "";
+    [ObservableProperty] private int _subtitlePreferenceIndex;
+    [ObservableProperty] private SubtitleSuggestion? _selectedSubtitle;
+    [ObservableProperty] private string _subtitleStatus = "Select a show to see its subtitles.";
+    public ObservableCollection<SubtitleSuggestion> Subtitles { get; } = [];
+
+    public IReadOnlyList<string> SubtitlePreferences { get; } =
+        ["Clean dialogue (fewer labels and reading aids)", "Verbatim / closed captions", "Any subtitle style"];
 
     public bool IsMovieSelected => Selected?.Deck.ChildrenDeckCount == 0;
 
-    partial void OnSelectedChanged(EpisodeCandidateViewModel? value) => OnPropertyChanged(nameof(IsMovieSelected));
+    partial void OnSelectedChanged(EpisodeCandidateViewModel? value)
+    {
+        OnPropertyChanged(nameof(IsMovieSelected));
+        _ = LoadSubtitlesAsync();
+    }
+
+    partial void OnEpisodeChanged(decimal? value) => _ = LoadSubtitlesAsync();
+
+    public void StopSubtitleSearch() => _subtitleCts?.Cancel();
+
+    private async Task LoadSubtitlesAsync()
+    {
+        _subtitleCts?.Cancel();
+        var cts = _subtitleCts = new CancellationTokenSource();
+        Subtitles.Clear();
+        SelectedSubtitle = null;
+        if (Selected is not { } selected || _data.FindSubtitles is null) return;
+        SubtitleStatus = "Loading subtitles...";
+        try
+        {
+            await Task.Delay(250, cts.Token);
+            var episode = selected.Deck.ChildrenDeckCount == 0 || Episode is null ? (int?)null : (int)Episode.Value;
+            var subtitles = await _data.FindSubtitles(selected.Deck, episode, cts.Token);
+            if (cts.IsCancellationRequested) return;
+            foreach (var subtitle in subtitles) Subtitles.Add(subtitle);
+            SubtitleStatus = subtitles.Count == 0 ? "No matching downloads. Embedded tracks remain available."
+                : "Choose a file, or leave unselected to use the best match.";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (!cts.IsCancellationRequested) SubtitleStatus = $"Subtitle search failed: {ex.Message}";
+        }
+    }
 
     private EpisodeCandidateViewModel? Find(int deckId)
     {
@@ -139,12 +181,18 @@ public partial class EpisodePickerViewModel : ViewModelBase
     {
         if (Selected is not { } selected) return;
         var episode = selected.Deck.ChildrenDeckCount == 0 || Episode is null ? (int?)null : (int)Episode.Value;
-        Completed?.Invoke(new EpisodePickerResult(selected.Deck, episode, false));
+        _subtitleCts?.Cancel();
+        Completed?.Invoke(new EpisodePickerResult(selected.Deck, episode, false,
+            (SubtitlePreference)SubtitlePreferenceIndex, SelectedSubtitle?.Url));
     }
 
     [RelayCommand]
     private void IgnoreFolder() => Completed?.Invoke(new EpisodePickerResult(null, null, true));
 
     [RelayCommand]
-    private void Cancel() => Completed?.Invoke(null);
+    private void Cancel()
+    {
+        _subtitleCts?.Cancel();
+        Completed?.Invoke(null);
+    }
 }

@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using JitenMPV.Core.Config;
+using JitenMPV.Core.Api.Models;
+using JitenMPV.Core.Tracking;
 using JitenMPV.Core.Interaction;
 using JitenMPV.Core.MediaInfo;
 using JitenMPV.Core.Mpv;
@@ -42,6 +44,9 @@ public sealed partial class JimakuService : IDisposable
     private volatile JimakuClient _client;
     private CancellationTokenSource? _fileCts;
     private Session? _session;
+    private readonly Func<SubtitleShowChoice?>? _preferredShow;
+    private readonly Dictionary<(int Entry, int? Episode), List<JimakuFile>> _fileLists = [];
+    private string? _requestedUrl;
 
     private sealed class Session(string mediaPath)
     {
@@ -49,31 +54,27 @@ public sealed partial class JimakuService : IDisposable
         public string? MediaName { get; init; }
         public int? Episode { get; init; }
         public List<JimakuEntry> Entries { get; init; } = [];
-        public bool Searched { get; init; }
-        public int FileTracks { get; set; }
-        public int FirstEntryFiles { get; set; }
-
-        /// -1 while cycling the file's own Japanese tracks.
-        public int EntryIndex { get; set; }
+        public string? Scope { get; init; }
         public List<Candidate> Candidates { get; set; } = [];
         public int Index { get; set; } = -1;
-        public JimakuEntry Entry => Entries[EntryIndex];
     }
 
-    /// LocalPath is set once the file is on disk, or from the start for an unpacked archive member.
-    /// TrackId marks a Japanese track the file already has.
-    private sealed record Candidate(string Name, string? Url, string? LocalPath, int? TrackId = null);
+    private sealed record Candidate(string Name, string? Url, string? LocalPath, int? TrackId = null,
+        JimakuEntry? Entry = null, string? SourceUrl = null);
 
-    private sealed record RememberedChoice(JimakuEntry Entry, int? Episode, List<Candidate> Candidates, int Index);
+    private sealed record RememberedChoice(JimakuEntry Entry, int? Episode, List<Candidate> Candidates, int Index,
+        List<JimakuEntry>? Entries = null, string? Scope = null);
 
     public JimakuService(MpvIpcClient ipc, StatusOverlay status, PluginSettings settings, ILogger logger,
-        HttpMessageHandler? handler = null, string? cacheDir = null)
+        HttpMessageHandler? handler = null, string? cacheDir = null,
+        Func<SubtitleShowChoice?>? preferredShow = null)
     {
         _ipc = ipc;
         _status = status;
         _settings = settings;
         _logger = logger;
         _handler = handler;
+        _preferredShow = preferredShow;
         _cacheDir = cacheDir ?? Path.Combine(AppPaths.CacheDir, "jimaku");
         _client = new JimakuClient(settings.JimakuApiKey, logger, handler);
     }
@@ -218,8 +219,7 @@ public sealed partial class JimakuService : IDisposable
         await SearchAndLoadAsync(path, props.Filename, identity, null, userInitiated: false, ct);
     }
 
-    /// Without a typed query, the file's own Japanese tracks come before Jimaku.
-    private async Task SearchAsync(string? query, CancellationToken ct, bool skipFileTracks = false)
+    private async Task SearchAsync(string? query, CancellationToken ct)
     {
         var props = await MediaIdentityReader.ReadPropertiesAsync(_ipc, _logger, ct);
         if (props?.Path is not { } path)
@@ -227,35 +227,28 @@ public sealed partial class JimakuService : IDisposable
             await NotifyAsync("Jimaku: no file loaded", true, ct);
             return;
         }
-
-        var identity = MediaIdentityResolver.Resolve(props);
-
-        // Submitting the detected title unchanged keeps its season and fallback queries.
-        if (query is not null && query == SearchQueries(identity).FirstOrDefault())
-            (query, skipFileTracks) = (null, true);
-
-        if (query is null && !skipFileTracks)
-        {
-            var (tracks, selected) = await FileTracksAsync(ct);
-            if (selected + 1 < tracks.Count)
-            {
-                var (entries, firstEntryFiles) = await PeekEntriesAsync(identity, ct);
-                var session = new Session(path)
-                {
-                    MediaName = props.Filename, Episode = identity?.Episode, Entries = entries,
-                    Searched = entries.Count > 0, Candidates = tracks, EntryIndex = -1, FileTracks = tracks.Count,
-                    FirstEntryFiles = firstEntryFiles
-                };
-                _session = session;
-                if (await AdvanceAsync(session, selected + 1, 1, userInitiated: true, ct)) return;
-            }
-        }
-
-        if (!_client.HasKey)
-            throw new JimakuException(JimakuErrorKind.MissingKey, "No Jimaku API key set");
-
-        await SearchAndLoadAsync(path, props.Filename, identity, query, userInitiated: true, ct);
+        await SearchAndLoadAsync(path, props.Filename, MediaIdentityResolver.Resolve(props), query, true, ct);
     }
+
+    public async Task RefreshSelectionAsync(CancellationToken ct, string? subtitleUrl = null)
+    {
+        var token = _fileCts?.Token ?? ct;
+        await _busy.WaitAsync(token);
+        try
+        {
+            _session = null;
+            _requestedUrl = subtitleUrl;
+            await RunGuardedAsync(() => SearchAsync(null, token), true, token);
+        }
+        finally
+        {
+            _requestedUrl = null;
+            _busy.Release();
+        }
+    }
+
+    private string? SelectionScope => _preferredShow?.Invoke() is { } choice
+        ? $"{choice.Deck.DeckId}:{choice.Episode}:{choice.Preference}" : null;
 
     private async Task ForceSearchAsync(CancellationToken ct)
     {
@@ -270,142 +263,194 @@ public sealed partial class JimakuService : IDisposable
         await _ipc.SendScriptMessageAsync(LuaScriptName, "jiten-jimaku-prompt", title, "search", ct);
     }
 
-    /// Searched up front even when the file has Japanese tracks, so the position shown while cycling
-    /// them already counts the Jimaku files that follow.
-    private async Task<(List<JimakuEntry> Entries, int FirstEntryFiles)> PeekEntriesAsync(
-        MediaIdentity? identity, CancellationToken ct)
+    private async Task<List<JimakuFile>> GetFilesAsync(int entry, int? episode, CancellationToken ct)
     {
-        var queries = SearchQueries(identity);
-        if (!_client.HasKey || queries.Count == 0) return ([], 0);
+        if (_fileLists.TryGetValue((entry, episode), out var files)) return files;
+        files = await _client.GetFilesAsync(entry, episode, ct);
+        _fileLists[(entry, episode)] = files;
+        return files;
+    }
+
+    public async Task<IReadOnlyList<SubtitleSuggestion>> FindSubtitlesAsync(
+        MediaDeck deck, int? episode, CancellationToken ct)
+    {
+        if (!_client.HasKey) return [];
+        await _busy.WaitAsync(ct);
         try
         {
-            var entries = await FindEntriesAsync(queries, identity?.Season, identity?.Episode, ct);
-            if (entries.Count == 0) return ([], 0);
-            var files = await _client.GetFilesAsync(entries[0].Id, identity?.Episode, ct);
-            var usable = JimakuFileRanker.Rank(files, f => f.Name, identity?.Episode, identity?.TitleSource).Count;
-            return (entries, usable);
+            var entries = await FindEntriesAsync([.. deck.Titles.Distinct()], null, episode, ct, deck);
+            var suggestions = new List<SubtitleSuggestion>();
+            foreach (var entry in entries)
+                suggestions.AddRange(JimakuFileRanker.Rank(await GetFilesAsync(entry.Id, episode, ct),
+                    f => f.Name, episode, null).Select(f => new SubtitleSuggestion(f.Name, f.Url)));
+            return suggestions;
         }
-        catch (JimakuException ex)
-        {
-            _logger.LogWarning("Jimaku lookup failed, cycling the file's own tracks only: {Message}", ex.Message);
-            return ([], 0);
-        }
+        finally { _busy.Release(); }
     }
 
     private async Task NextAsync(CancellationToken ct)
     {
         var path = (await MediaIdentityReader.ReadPropertiesAsync(_ipc, _logger, ct))?.Path;
-        if (_session is not { } session || session.MediaPath != path)
+        if (_session is not { } session || session.MediaPath != path || session.Scope != SelectionScope)
         {
             await SearchAsync(null, ct);
             return;
         }
-
-        if (await AdvanceAsync(session, session.Index + 1, 1, userInitiated: true, ct)) return;
-        if (!session.Searched)
-        {
-            await SearchAsync(null, ct, skipFileTracks: true);
-            return;
-        }
-
-        for (var entry = session.EntryIndex + 1; entry < session.Entries.Count; entry++)
-            if (await LoadEntryAsync(session, entry, userInitiated: true, ct))
-                return;
-
-        await NotifyAsync("Jimaku: no more subtitles, starting over", false, ct);
-        (session.Candidates, _) = await FileTracksAsync(ct);
-        session.FileTracks = session.Candidates.Count;
-        session.EntryIndex = -1;
-        if (await AdvanceAsync(session, 0, 1, userInitiated: true, ct)) return;
-        if (session.Entries.Count == 0 || !await LoadEntryAsync(session, 0, userInitiated: true, ct))
-            await NotifyAsync("Jimaku: none of the subtitles could be loaded", true, ct);
+        await CycleAsync(session, 1, ct);
     }
 
-    /// Steps back through the same order as NextAsync; before the first position it wraps to the end of
-    /// the list it started in rather than fetching every entry to find the overall last one.
     private async Task PreviousAsync(CancellationToken ct)
     {
         var path = (await MediaIdentityReader.ReadPropertiesAsync(_ipc, _logger, ct))?.Path;
-        if (_session is not { } session || session.MediaPath != path)
+        if (_session is not { } session || session.MediaPath != path || session.Scope != SelectionScope)
         {
             await SearchAsync(null, ct);
             return;
         }
+        await CycleAsync(session, -1, ct);
+    }
 
-        var (startEntry, startCandidates) = (session.EntryIndex, session.Candidates);
-        if (await AdvanceAsync(session, session.Index - 1, -1, userInitiated: true, ct)) return;
-
-        if (startEntry >= 0)
+    private async Task CycleAsync(Session session, int step, CancellationToken ct)
+    {
+        var count = session.Candidates.Count;
+        var start = session.Index;
+        for (var n = 1; n <= count; n++)
         {
-            for (var entry = startEntry - 1; entry >= 0; entry--)
-                if (await LoadEntryAsync(session, entry, userInitiated: true, ct, fromEnd: true))
-                    return;
-
-            (session.Candidates, _) = await FileTracksAsync(ct);
-            session.FileTracks = session.Candidates.Count;
-            session.EntryIndex = -1;
-            if (await AdvanceAsync(session, session.Candidates.Count - 1, -1, userInitiated: true, ct)) return;
+            var index = (start + step * n + count * 2) % count;
+            if (await AdvanceAsync(session, index, step, true, ct, single: true)) return;
         }
-
-        (session.EntryIndex, session.Candidates) = (startEntry, startCandidates);
-        if (!await AdvanceAsync(session, session.Candidates.Count - 1, -1, userInitiated: true, ct))
-            await NotifyAsync("Jimaku: none of the subtitles could be loaded", true, ct);
+        await NotifyAsync("Jimaku: none of the subtitles could be loaded", true, ct);
     }
 
     private async Task SearchAndLoadAsync(
         string path, string? mediaName, MediaIdentity? identity, string? query, bool userInitiated,
         CancellationToken ct)
     {
+        var choice = _preferredShow?.Invoke();
+        var scope = SelectionScope;
         List<string> queries;
-        int? episode;
-        int? season;
-        if (query is not null)
+        int? episode = choice is null ? identity?.Episode : choice.Episode;
+        int? season = identity?.Season;
+        if (choice is not null)
+            queries = [.. choice.Deck.Titles.Distinct()];
+        else if (query is not null)
         {
             var parsed = ReleaseNameParser.Parse(query);
             queries = [parsed.IsJunkTitle ? query : parsed.Title];
-            episode = parsed.Episode ?? identity?.Episode;
+            episode = parsed.Episode ?? episode;
             season = parsed.Season;
         }
-        else
-        {
-            queries = SearchQueries(identity);
-            episode = identity?.Episode;
-            season = identity?.Season;
-        }
+        else queries = SearchQueries(identity);
 
-        if (queries.Count == 0)
+        var (fileTracks, selected) = await FileTracksAsync(ct);
+        if (queries.Count == 0 && fileTracks.Count == 0)
         {
             if (userInitiated) await PromptAsync("", ct);
             return;
         }
 
-        var label = episode is { } ep ? $"{queries[0]} ep {ep}" : queries[0];
-        await NotifyAsync($"Jimaku: searching {label}", false, ct);
-
-        var entries = await FindEntriesAsync(queries, season, episode, ct);
-        if (entries.Count == 0)
+        List<JimakuEntry> entries = [];
+        if (_client.HasKey && queries.Count > 0)
         {
-            await NotifyAsync($"Jimaku: nothing found for {queries[0]}", userInitiated, ct);
-            if (userInitiated) await PromptAsync(queries[0], ct);
-            return;
+            await NotifyAsync($"Jimaku: searching {queries[0]}", false, ct);
+            entries = await FindEntriesAsync(queries, season, episode, ct, choice?.Deck);
+            if (choice is not null)
+                entries = entries.Where(e => MatchesSelectedShow(e, choice.Deck)).ToList();
         }
+        else if (fileTracks.Count == 0)
+            throw new JimakuException(JimakuErrorKind.MissingKey, "No Jimaku API key set");
 
-        var (fileTracks, _) = await FileTracksAsync(ct);
         var session = new Session(path)
         {
-            MediaName = mediaName, Episode = episode, Entries = entries, Searched = true, FileTracks = fileTracks.Count
+            MediaName = mediaName,
+            Episode = episode,
+            Entries = entries,
+            Scope = scope,
+            Candidates = fileTracks
         };
+        foreach (var entry in entries)
+        {
+            List<JimakuFile> files;
+            try
+            {
+                files = await GetFilesAsync(entry.Id, episode, ct);
+            }
+            catch (JimakuException ex) when (ex.Kind is JimakuErrorKind.NotFound or JimakuErrorKind.BadResponse
+                or JimakuErrorKind.Network)
+            {
+                _logger.LogWarning(ex, "Skipping subtitle entry {Id}", entry.Id);
+                continue;
+            }
+            foreach (var file in JimakuFileRanker.Rank(files, f => f.Name, episode, mediaName))
+            {
+                var candidate = new Candidate(file.Name, file.Url, null, Entry: entry);
+                if (JimakuFileRanker.IsArchive(file.Name))
+                {
+                    try
+                    {
+                        var local = await DownloadCandidateAsync(candidate, ct);
+                        var directory = local + ".d";
+                        var members = ArchiveEpisodeFilter.Filter(
+                            await SubtitleArchive.ExtractAsync(local, directory, _logger, ct), episode);
+                        session.Candidates.AddRange(JimakuFileRanker.Rank(members, Path.GetFileName, null, mediaName)
+                            .Select(m => new Candidate($"{file.Name}/{Path.GetRelativePath(directory, m)}", null, m,
+                                Entry: entry, SourceUrl: file.Url)));
+                    }
+                    catch (Exception ex) when (ex is InvalidDataException || ex is JimakuException
+                    { Kind: JimakuErrorKind.NotFound or JimakuErrorKind.BadResponse or JimakuErrorKind.Network })
+                    {
+                        _logger.LogWarning(ex, "Skipping archive {Name}", file.Name);
+                    }
+                }
+                else session.Candidates.Add(candidate);
+            }
+        }
+        session.Candidates = session.Candidates.DistinctBy(c => c.TrackId is { } id ? $"track:{id}"
+            : c.Url ?? c.LocalPath ?? c.Name).ToList();
+        var preference = choice?.Preference ?? SubtitlePreference.Dialogue;
+        var scored = new List<(Candidate Candidate, int Score, int Index)>();
+        for (var i = 0; i < session.Candidates.Count; i++)
+        {
+            var candidate = session.Candidates[i];
+            string? content = null;
+            try
+            {
+                if (candidate.TrackId is null && candidate.LocalPath is null)
+                    candidate = candidate with { LocalPath = await DownloadCandidateAsync(candidate, ct) };
+                if (candidate.LocalPath is { } local && JimakuFileRanker.IsText(local))
+                    content = await File.ReadAllTextAsync(local, ct);
+            }
+            catch (JimakuException ex) when (ex.Kind is JimakuErrorKind.NotFound or JimakuErrorKind.BadResponse
+                or JimakuErrorKind.Network)
+            {
+                _logger.LogWarning(ex, "Skipping {Name}", candidate.Name);
+                continue;
+            }
+            var score = SubtitleContentRanker.Score(candidate.Name, content, mediaName, preference);
+            if (candidate.TrackId is not null) score += 20;
+            scored.Add((candidate, score, i));
+        }
+        session.Candidates = [.. scored.OrderByDescending(x => x.Score).ThenBy(x => x.Index).Select(x => x.Candidate)];
+        if (scope != SelectionScope) return;
         _session = session;
-
-        // Automatic fetching sticks to the best entry; the next key walks the rest.
-        var last = userInitiated ? entries.Count : 1;
-        for (var i = 0; i < last; i++)
-            if (await LoadEntryAsync(session, i, userInitiated, ct))
-                return;
-
-        await NotifyAsync($"Jimaku: no subtitles for {label}", userInitiated, ct);
-        if (userInitiated) await PromptAsync(queries[0], ct);
+        var selectedTrack = selected >= 0 ? fileTracks[selected].TrackId : null;
+        var selectedIndex = selectedTrack is null ? -1
+            : session.Candidates.FindIndex(c => c.TrackId == selectedTrack);
+        var requestedIndex = _requestedUrl is null ? -1 : session.Candidates.FindIndex(c => c.Url == _requestedUrl || c.SourceUrl == _requestedUrl);
+        var start = requestedIndex >= 0 ? requestedIndex
+            : query is null && selectedIndex >= 0 ? selectedIndex + 1 : 0;
+        if (await AdvanceAsync(session, start, 1, userInitiated, ct)) return;
+        if (start > 0 && await AdvanceAsync(session, 0, 1, userInitiated, ct)) return;
+        await NotifyAsync(choice is null ? "Jimaku: no usable subtitles found"
+            : $"Jimaku: no usable subtitles for {choice.Deck.DisplayTitle}", userInitiated, ct);
     }
+
+    private static bool MatchesSelectedShow(JimakuEntry entry, MediaDeck deck)
+        => entry.Flags.Movie == (deck.ChildrenDeckCount == 0)
+            && entry.Flags.Anime == (deck.MediaType == MediaDeck.Anime)
+            && new[] { entry.Name, entry.EnglishName, entry.JapaneseName }.OfType<string>()
+                .Any(name => deck.Titles.Concat(deck.Aliases ?? [])
+                    .Any(title => JimakuEntryMatcher.TitleScore(name, title) >= 2));
 
     internal static List<string> SearchQueries(MediaIdentity? identity)
     {
@@ -428,11 +473,8 @@ public sealed partial class JimakuService : IDisposable
         return queries;
     }
 
-    /// The plausible entries of the first query that has any, followed by the rest of that
-    /// search's results so the next key can still reach them. Live action is searched only when no
-    /// anime entry fits, so anime matches stay as they were.
     private async Task<List<JimakuEntry>> FindEntriesAsync(
-        List<string> queries, int? season, int? episode, CancellationToken ct)
+        List<string> queries, int? season, int? episode, CancellationToken ct, MediaDeck? selectedShow = null)
     {
         foreach (var anime in new[] { true, false })
         {
@@ -451,39 +493,20 @@ public sealed partial class JimakuService : IDisposable
                 }
 
                 var ranked = JimakuEntryMatcher.Rank(results, query, season, episode);
+                if (selectedShow is not null)
+                    ranked = ranked.Where(e => MatchesSelectedShow(e, selectedShow)).ToList();
                 _logger.LogInformation("Jimaku {Kind} search '{Query}': {Count} entries, {Plausible} plausible",
                     anime ? "anime" : "live action", query, results.Count, ranked.Count);
                 if (ranked.Count > 0)
-                    return [.. ranked, .. results.Where(r => !ranked.Contains(r))];
+                    return [.. ranked.DistinctBy(e => e.Id)];
             }
         }
         return [];
     }
 
-    private async Task<bool> LoadEntryAsync(Session session, int entryIndex, bool userInitiated, CancellationToken ct,
-        bool fromEnd = false)
-    {
-        session.EntryIndex = entryIndex;
-        var entry = session.Entry;
-
-        var files = await _client.GetFilesAsync(entry.Id, session.Episode, ct);
-
-        var ranked = JimakuFileRanker.Rank(files, f => f.Name, session.Episode, session.MediaName);
-        _logger.LogInformation("Jimaku entry {Id} '{Name}': {Count} files, {Usable} usable",
-            entry.Id, entry.Name, files.Count, ranked.Count);
-        if (ranked.Count == 0) return false;
-
-        session.Candidates = [.. ranked.Select(f => new Candidate(f.Name, f.Url, null))];
-        session.Index = -1;
-        await NotifyAsync($"Jimaku: found {entry.Name}", false, ct);
-        return fromEnd
-            ? await AdvanceAsync(session, session.Candidates.Count - 1, -1, userInitiated, ct)
-            : await AdvanceAsync(session, 0, 1, userInitiated, ct);
-    }
-
     /// Skips past downloads that fail and archives without this episode.
     private async Task<bool> AdvanceAsync(Session session, int start, int step, bool userInitiated,
-        CancellationToken ct)
+        CancellationToken ct, bool single = false)
     {
         for (var i = start; i >= 0 && i < session.Candidates.Count; i += step)
         {
@@ -491,7 +514,7 @@ public sealed partial class JimakuService : IDisposable
             session.Index = i;
             try
             {
-                if (await LoadCandidateAsync(session, i, userInitiated, ct, fromEnd: step < 0))
+                if (await LoadCandidateAsync(session, i, userInitiated, ct))
                 {
                     if (session.Candidates[session.Index].TrackId is null) Remember(session);
                     return true;
@@ -506,14 +529,21 @@ public sealed partial class JimakuService : IDisposable
             {
                 _logger.LogWarning("Skipping {Name}: {Message}", session.Candidates[i].Name, ex.Message);
             }
+            if (single) break;
             i = session.Index;
         }
         return false;
     }
 
-    /// Stepping backwards into an archive lands on its last member.
-    private async Task<bool> LoadCandidateAsync(Session session, int index, bool userInitiated, CancellationToken ct,
-        bool fromEnd = false)
+    private async Task<string> DownloadCandidateAsync(Candidate candidate, CancellationToken ct)
+    {
+        var target = Path.Combine(_cacheDir, candidate.Entry!.Id.ToString(), SafeFileName(candidate.Name));
+        if (!File.Exists(target) || new FileInfo(target).Length == 0)
+            await _client.DownloadAsync(candidate.Url!, target, ct);
+        return target;
+    }
+
+    private async Task<bool> LoadCandidateAsync(Session session, int index, bool userInitiated, CancellationToken ct)
     {
         var candidate = session.Candidates[index];
         if (candidate.TrackId is { } trackId)
@@ -522,72 +552,23 @@ public sealed partial class JimakuService : IDisposable
             await NotifyAsync(Position(session, index), userInitiated, ct);
             return true;
         }
-
         if (candidate.LocalPath is null)
         {
-            var target = Path.Combine(_cacheDir, session.Entry.Id.ToString(), SafeFileName(candidate.Name));
-            if (!File.Exists(target) || new FileInfo(target).Length == 0)
-            {
-                await NotifyAsync(Position(session, index, "Downloading"), userInitiated, ct);
-                await _client.DownloadAsync(candidate.Url!, target, ct);
-            }
-            candidate = candidate with { LocalPath = target };
+            await NotifyAsync($"Jimaku: downloading {candidate.Name}", false, ct);
+            candidate = candidate with { LocalPath = await DownloadCandidateAsync(candidate, ct) };
             session.Candidates[index] = candidate;
         }
-
-        var local = candidate.LocalPath!;
-        if (JimakuFileRanker.IsArchive(local))
-        {
-            var directory = local + ".d";
-            var members = ArchiveEpisodeFilter.Filter(
-                await SubtitleArchive.ExtractAsync(local, directory, _logger, ct), session.Episode);
-            members = JimakuFileRanker.Rank(members, Path.GetFileName, null, session.MediaName);
-            if (members.Count == 0)
-            {
-                _logger.LogInformation("No subtitles for this episode in {Name}", candidate.Name);
-                return false;
-            }
-
-            session.Candidates.RemoveAt(index);
-            session.Candidates.InsertRange(index, members.Select(m => new Candidate(
-                $"{candidate.Name}/{Path.GetRelativePath(directory, m)}", null, m)));
-            if (fromEnd) index += members.Count - 1;
-            session.Index = index;
-            candidate = session.Candidates[index];
-            local = candidate.LocalPath!;
-        }
-
-        if (!File.Exists(local)) return false;
-        if (!await AddTrackAsync(await PrepareAsync(local, ct), candidate.Name, ct)) return false;
-
-        _logger.LogInformation("Jimaku loaded {Name} ({Index}/{Count})",
-            candidate.Name, index + 1, session.Candidates.Count);
-        if (session.EntryIndex == 0) session.FirstEntryFiles = session.Candidates.Count;
+        if (!File.Exists(candidate.LocalPath)) return false;
+        if (!await AddTrackAsync(await PrepareAsync(candidate.LocalPath, ct), candidate.Name, ct)) return false;
         await NotifyAsync(Position(session, index), userInitiated, ct);
         return true;
     }
 
-    private static string Position(Session session, int index, string? state = null)
+    private static string Position(Session session, int index)
     {
         var candidate = session.Candidates[index];
-        return PositionText(session.FileTracks, session.FirstEntryFiles, session.EntryIndex,
-            session.EntryIndex > 0 ? session.Entry.Name : null, index, session.Candidates.Count,
-            candidate.TrackId is null ? Path.GetFileName(candidate.Name) : candidate.Name, state);
-    }
-
-    /// The file's own tracks and the first entry's files count as one cycle; a later entry restarts
-    /// the count, so its name is shown.
-    internal static string PositionText(int fileTracks, int firstEntryFiles, int entryIndex, string? entryName,
-        int index, int count, string name, string? state = null)
-    {
-        var (position, total) = entryIndex switch
-        {
-            < 0 => (index + 1, count + firstEntryFiles),
-            0 => (fileTracks + index + 1, fileTracks + count),
-            _ => (index + 1, count)
-        };
-        var label = entryName is null ? name : $"{entryName}: {name}";
-        return state is null ? $"[{position}/{total}] {label}" : $"[{position}/{total}] {state}: {label}";
+        var label = candidate.Entry is { } entry ? $"{entry.Name}: {Path.GetFileName(candidate.Name)}" : candidate.Name;
+        return $"[{index + 1}/{session.Candidates.Count}] {label}";
     }
 
     /// Writes a Japanese-only copy beside a bilingual JP/CN subtitle; anything else loads as is.
@@ -632,7 +613,7 @@ public sealed partial class JimakuService : IDisposable
             .Where(t => !JapaneseTrackDetector.IsBitmap(t) && IsJapaneseTrack(t)
                         && t.ExternalFilename?.StartsWith(_cacheDir, StringComparison.Ordinal) != true)
             .ToList();
-        return ([.. tracks.Select(t => new Candidate(t.Title ?? t.Lang ?? $"track {t.Id}", null, null, t.Id))],
+        return ([.. tracks.Select(t => new Candidate(t.Title ?? t.Lang ?? $"track {t.Id}", null, t.ExternalFilename, t.Id))],
             tracks.FindIndex(t => t.Selected));
     }
 
@@ -686,26 +667,27 @@ public sealed partial class JimakuService : IDisposable
             return false;
         }
 
-        if (choice is null || choice.Index < 0 || choice.Index >= choice.Candidates.Count
+        if (choice is null || choice.Entries is null || choice.Scope != SelectionScope || choice.Index < 0 || choice.Index >= choice.Candidates.Count
             || choice.Candidates[choice.Index].LocalPath is not { } local || !File.Exists(local))
             return false;
 
         // Old remembered lists can contain other episodes that were only ranked lower.
         var selected = choice.Candidates[choice.Index];
-        var candidates = choice.Candidates
-            .Where(c => JimakuFileRanker.IsForEpisode(c.Name, choice.Episode)).ToList();
-        var index = candidates.IndexOf(selected);
+        var (fileTracks, _) = await FileTracksAsync(ct);
+        var candidates = fileTracks.Concat(choice.Candidates.Where(c => c.TrackId is null
+            && JimakuFileRanker.IsForEpisode(c.Name, choice.Episode))).ToList();
+        var index = candidates.FindIndex(c => c.Url == selected.Url && c.LocalPath == selected.LocalPath
+            && c.TrackId == selected.TrackId);
         if (index < 0) return false;
 
-        var (fileTracks, _) = await FileTracksAsync(ct);
         var session = new Session(mediaPath)
         {
             MediaName = mediaName,
             Episode = choice.Episode,
-            Entries = [choice.Entry],
-            Searched = true,
-            FileTracks = fileTracks.Count,
-            Candidates = candidates,
+            Entries = choice.Entries ?? [choice.Entry],
+            Scope = choice.Scope,
+            Candidates = candidates.Select(c => c.TrackId is null && c.Entry is null
+                ? c with { Entry = choice.Entry } : c).ToList(),
             Index = index
         };
         _session = session;
@@ -720,7 +702,8 @@ public sealed partial class JimakuService : IDisposable
             var file = RememberPath(session.MediaPath);
             Directory.CreateDirectory(Path.GetDirectoryName(file)!);
             File.WriteAllText(file, JsonSerializer.Serialize(
-                new RememberedChoice(session.Entry, session.Episode, session.Candidates, session.Index), JsonOptions));
+                new RememberedChoice(session.Candidates[session.Index].Entry!, session.Episode,
+                    session.Candidates, session.Index, session.Entries, session.Scope), JsonOptions));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

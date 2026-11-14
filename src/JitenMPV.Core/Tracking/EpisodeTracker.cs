@@ -58,9 +58,26 @@ public sealed class EpisodeTracker(
             _ = TaskHelper.RunSafe(() => ResolveAsync(identity, version, token), logger, "Resolve episode");
     }
 
+    public Func<MediaDeck, int?, CancellationToken, Task<IReadOnlyList<SubtitleSuggestion>>>? FindSubtitles { get; set; }
+    public string? SelectedSubtitleUrl { get; private set; }
+
     public bool IsTracking => _identity is not null;
 
     public DeckMatch? CurrentMatch => _match;
+
+    public SubtitleShowChoice? SubtitleChoice
+    {
+        get
+        {
+            lock (_lock)
+            {
+                if (_identity is null || _match?.Deck is not { } deck
+                    || _source is not (MatchSource.Manual or MatchSource.Map or MatchSource.Script)) return null;
+                var entry = MediaMap.KeyFor(_identity) is { } key ? map.Get(key) : null;
+                return new SubtitleShowChoice(deck, _match.Episode, entry?.SubtitlePreference ?? SubtitlePreference.Dialogue);
+            }
+        }
+    }
 
     /// Raised without a match when a file starts resolving, then for every match it gets.
     public event Action<TrackedMedia>? MatchChanged;
@@ -266,6 +283,7 @@ public sealed class EpisodeTracker(
 
     public async Task OpenPickerAsync(CancellationToken ct)
     {
+        SelectedSubtitleUrl = null;
         var identity = _identity;
         if (identity is null || picker is null)
         {
@@ -283,9 +301,11 @@ public sealed class EpisodeTracker(
             match?.Episode ?? identity.Episode,
             match?.Deck?.DeckId,
             candidates,
-            resolver.SearchAsync);
+            resolver.SearchAsync,
+            SubtitleChoice?.Preference ?? SubtitlePreference.Dialogue,
+            FindSubtitles);
 
-        if (await picker.ShowAsync(data, ct) is not { } result) return;
+        if (await picker.ShowAsync(data, _fileCts?.Token ?? ct) is not { } result || _identity != identity) return;
 
         var key = MediaMap.KeyFor(identity);
         if (key is null)
@@ -303,7 +323,8 @@ public sealed class EpisodeTracker(
         }
 
         if (result.Deck is not { } deck) return;
-        await ApplyChoiceAsync(identity, key, deck, result.Episode, MatchSource.Manual, ct);
+        SelectedSubtitleUrl = result.SubtitleUrl;
+        await ApplyChoiceAsync(identity, key, deck, result.Episode, MatchSource.Manual, ct, result.SubtitlePreference);
     }
 
     /// Saved like a choice made in the picker. False when nothing that can be remembered is playing.
@@ -316,10 +337,16 @@ public sealed class EpisodeTracker(
     }
 
     private async Task ApplyChoiceAsync(
-        MediaIdentity identity, string key, MediaDeck deck, int? episode, MatchSource source, CancellationToken ct)
+        MediaIdentity identity, string key, MediaDeck deck, int? episode, MatchSource source, CancellationToken ct, SubtitlePreference? preference = null)
     {
         var offset = episode is { } n ? n - (identity.Episode ?? 0) : 0;
-        map.Set(key, new MediaMapEntry { DeckId = deck.DeckId, EpisodeOffset = offset, Title = deck.DisplayTitle });
+        map.Set(key, new MediaMapEntry
+        {
+            DeckId = deck.DeckId,
+            EpisodeOffset = offset,
+            Title = deck.DisplayTitle,
+            SubtitlePreference = preference ?? map.Get(key)?.SubtitlePreference ?? SubtitlePreference.Dialogue
+        });
 
         int version;
         CancellationToken token;

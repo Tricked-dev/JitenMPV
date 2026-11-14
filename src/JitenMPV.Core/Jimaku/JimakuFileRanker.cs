@@ -22,17 +22,24 @@ public static partial class JimakuFileRanker
     public static bool IsBilingualName(string name)
         => BilingualLabel().IsMatch(JimakuEntryMatcher.Normalize(name));
 
-    /// Best first; archives that cannot be opened are dropped.
+    /// Best first; known episode mismatches and archives that cannot be opened are dropped.
     public static List<T> Rank<T>(IEnumerable<T> files, Func<T, string> name, int? episode, string? mediaName)
     {
         var group = ReleaseGroupOf(mediaName);
         return [.. files
             .Where(f => IsText(name(f)) || (IsArchive(name(f)) && SubtitleArchive.CanExtract(ExtensionOf(name(f)))))
+            .Where(f => IsForEpisode(name(f), episode))
             .Select((file, index) => (File: file, Index: index, Score: Score(name(file), episode, group)))
             .OrderByDescending(x => x.Score)
             .ThenBy(x => x.Index)
             .Select(x => x.File)];
     }
+
+    // The API's episode query can return other episodes too. Archives are checked member by
+    // member after extraction; unnumbered standalone subtitles remain usable.
+    internal static bool IsForEpisode(string name, int? episode)
+        => episode is null || IsArchive(name)
+            || ReleaseNameParser.ExtractEpisode(Path.GetFileName(name)) is not { } found || found == episode;
 
     internal static int Score(string name, int? episode, string? releaseGroup)
     {

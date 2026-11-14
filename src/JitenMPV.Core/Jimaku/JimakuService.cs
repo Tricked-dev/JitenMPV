@@ -690,6 +690,13 @@ public sealed partial class JimakuService : IDisposable
             || choice.Candidates[choice.Index].LocalPath is not { } local || !File.Exists(local))
             return false;
 
+        // Old remembered lists can contain other episodes that were only ranked lower.
+        var selected = choice.Candidates[choice.Index];
+        var candidates = choice.Candidates
+            .Where(c => JimakuFileRanker.IsForEpisode(c.Name, choice.Episode)).ToList();
+        var index = candidates.IndexOf(selected);
+        if (index < 0) return false;
+
         var (fileTracks, _) = await FileTracksAsync(ct);
         var session = new Session(mediaPath)
         {
@@ -698,12 +705,12 @@ public sealed partial class JimakuService : IDisposable
             Entries = [choice.Entry],
             Searched = true,
             FileTracks = fileTracks.Count,
-            Candidates = choice.Candidates,
-            Index = choice.Index
+            Candidates = candidates,
+            Index = index
         };
         _session = session;
         _logger.LogInformation("Reusing {Name} from an earlier viewing", choice.Candidates[choice.Index].Name);
-        return await LoadCandidateAsync(session, choice.Index, userInitiated: false, ct);
+        return await LoadCandidateAsync(session, index, userInitiated: false, ct);
     }
 
     private void Remember(Session session)

@@ -8,3 +8,8 @@ riderModule.iml
 .vs/
 .idea/
 .claude/
+
+/.private-tests/
+/tests/
+/docs/benchmarks/
+/tools/subtitle-benchmark.py

@@ -5,8 +5,8 @@
         x:Class="JitenMPV.App.Views.EpisodePickerWindow"
         x:DataType="vm:EpisodePickerViewModel"
         Title="Show and subtitles"
-        Width="560" Height="810"
-        MinWidth="440" MinHeight="420"
+        Width="1040" Height="660"
+        MinWidth="840" MinHeight="540"
         Topmost="True"
         ShowInTaskbar="False"
         WindowStartupLocation="CenterScreen"
@@ -14,6 +14,9 @@
         RequestedThemeVariant="Dark">
 
   <Window.Styles>
+    <Style Selector="ListBoxItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
     <Style Selector="TextBlock.section-header">
       <Setter Property="FontSize" Value="11" />
       <Setter Property="FontWeight" Value="SemiBold" />
@@ -34,78 +37,81 @@
     </Style>
   </Window.Styles>
 
-  <Grid Margin="20" RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" RowSpacing="12">
-
+  <Grid Margin="20" RowDefinitions="Auto,*,Auto" RowSpacing="16">
     <StackPanel Spacing="4">
       <TextBlock Text="Show and subtitle preferences" FontSize="18" FontWeight="Bold" Foreground="#ffffff" />
       <TextBlock Text="{Binding FileTitle}" FontSize="13" Foreground="#a1a1aa" TextWrapping="Wrap" />
     </StackPanel>
 
-    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
-      <TextBox Text="{Binding SearchText}" PlaceholderText="Search Jiten">
-        <TextBox.KeyBindings>
-          <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
-        </TextBox.KeyBindings>
-      </TextBox>
-      <Button Grid.Column="1" Content="Search" Classes="secondary" Command="{Binding SearchCommand}" />
+    <Grid Grid.Row="1" ColumnDefinitions="*,1.25*" ColumnSpacing="20">
+      <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="10">
+        <TextBlock Text="SHOW" Classes="section-header" />
+        <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <TextBox Text="{Binding SearchText}" PlaceholderText="Search Jiten">
+            <TextBox.KeyBindings>
+              <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
+            </TextBox.KeyBindings>
+          </TextBox>
+          <Button Grid.Column="1" Content="Search" Classes="secondary" Command="{Binding SearchCommand}" />
+        </Grid>
+        <ListBox Grid.Row="2" ItemsSource="{Binding Candidates}" SelectedItem="{Binding Selected}"
+                 Background="#0F0F12" CornerRadius="6">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:EpisodeCandidateViewModel">
+              <Grid ColumnDefinitions="48,*" ColumnSpacing="12">
+                <Border Width="48" Height="68" CornerRadius="4" Background="#27272a" ClipToBounds="True">
+                  <Image Source="{Binding Cover}" Stretch="UniformToFill" />
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Medium" Foreground="#ffffff"
+                             TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding Subtitle}" FontSize="12" Foreground="#a1a1aa"
+                             TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding Details}" FontSize="11" Foreground="#71717a" />
+                </StackPanel>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <TextBlock Grid.Row="3" Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa"
+                   IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="8" IsVisible="{Binding !IsMovieSelected}">
+          <TextBlock Text="This file is episode" VerticalAlignment="Center" Foreground="#a1a1aa" />
+          <NumericUpDown Value="{Binding Episode}" Minimum="1" Maximum="5000" Increment="1"
+                         FormatString="0" Width="140" />
+        </StackPanel>
+      </Grid>
+
+      <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto" RowSpacing="10">
+        <TextBlock Text="SUBTITLES FOR THIS SHOW" Classes="section-header" />
+        <ListBox Grid.Row="1" ItemsSource="{Binding Subtitles}" SelectedItem="{Binding SelectedSubtitle}"
+                 Background="#0F0F12" CornerRadius="6">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="tracking:SubtitleSuggestion">
+              <TextBlock Text="{Binding Name}" ToolTip.Tip="{Binding Name}" TextWrapping="Wrap"
+                         MaxLines="2" TextTrimming="CharacterEllipsis" FontSize="12" />
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+        <StackPanel Grid.Row="2" Spacing="8">
+          <TextBlock Text="{Binding SubtitleStatus}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
+          <WrapPanel Orientation="Horizontal">
+            <Button Content="Resync current subtitles" Classes="secondary" Command="{Binding SyncSubtitlesCommand}"
+                    Margin="0,0,8,6" IsEnabled="{Binding !SyncBusy}" />
+            <Button Content="Use original timing" Classes="secondary" Command="{Binding UndoSyncCommand}"
+                    Margin="0,0,0,6" IsEnabled="{Binding !SyncBusy}" />
+          </WrapPanel>
+          <TextBlock Text="{Binding SyncStatus}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
+          <TextBlock Text="SUBTITLE STYLE" Classes="section-header" />
+          <ComboBox ItemsSource="{Binding SubtitlePreferences}" SelectedIndex="{Binding SubtitlePreferenceIndex}"
+                    HorizontalAlignment="Stretch" />
+          <TextBlock Text="Your subtitle release is remembered for this season. K cycles alternatives."
+                     TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
+        </StackPanel>
+      </Grid>
     </Grid>
 
-    <Grid Grid.Row="2" RowDefinitions="*,Auto">
-      <ListBox ItemsSource="{Binding Candidates}" SelectedItem="{Binding Selected}"
-               Background="#0F0F12" CornerRadius="6">
-        <ListBox.ItemTemplate>
-          <DataTemplate x:DataType="vm:EpisodeCandidateViewModel">
-            <Grid ColumnDefinitions="48,*" ColumnSpacing="12">
-              <Border Width="48" Height="68" CornerRadius="4" Background="#27272a" ClipToBounds="True">
-                <Image Source="{Binding Cover}" Stretch="UniformToFill" />
-              </Border>
-              <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-                <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Medium" Foreground="#ffffff"
-                           TextWrapping="Wrap" />
-                <TextBlock Text="{Binding Subtitle}" FontSize="12" Foreground="#a1a1aa"
-                           TextTrimming="CharacterEllipsis" />
-                <TextBlock Text="{Binding Details}" FontSize="11" Foreground="#71717a" />
-              </StackPanel>
-            </Grid>
-          </DataTemplate>
-        </ListBox.ItemTemplate>
-      </ListBox>
-      <TextBlock Grid.Row="1" Text="{Binding Status}" FontSize="12" Foreground="#a1a1aa" Margin="0,6,0,0"
-                 IsVisible="{Binding Status, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-    </Grid>
-
-    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" IsVisible="{Binding !IsMovieSelected}">
-      <TextBlock Text="This file is episode" VerticalAlignment="Center" Foreground="#a1a1aa" />
-      <NumericUpDown Value="{Binding Episode}" Minimum="1" Maximum="5000" Increment="1"
-                     FormatString="0" Width="140" />
-    </StackPanel>
-
-    <StackPanel Grid.Row="4" Spacing="6">
-      <TextBlock Text="SUBTITLES FOR THIS SHOW" Classes="section-header" />
-      <ListBox ItemsSource="{Binding Subtitles}" SelectedItem="{Binding SelectedSubtitle}"
-               MaxHeight="120" Background="#0F0F12" CornerRadius="6">
-        <ListBox.ItemTemplate>
-          <DataTemplate x:DataType="tracking:SubtitleSuggestion">
-            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" FontSize="12" />
-          </DataTemplate>
-        </ListBox.ItemTemplate>
-      </ListBox>
-      <TextBlock Text="{Binding SubtitleStatus}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <Button Content="Resync current subtitles" Classes="secondary" Command="{Binding SyncSubtitlesCommand}"
-                IsEnabled="{Binding !SyncBusy}" />
-        <Button Content="Use original timing" Classes="secondary" Command="{Binding UndoSyncCommand}"
-                IsEnabled="{Binding !SyncBusy}" />
-      </StackPanel>
-      <TextBlock Text="{Binding SyncStatus}" TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
-      <TextBlock Text="SUBTITLE STYLE" Classes="section-header" />
-      <ComboBox ItemsSource="{Binding SubtitlePreferences}" SelectedIndex="{Binding SubtitlePreferenceIndex}"
-                HorizontalAlignment="Stretch" />
-      <TextBlock Text="K cycles subtitles for this show. The choice is remembered for this series."
-                 TextWrapping="Wrap" FontSize="12" Foreground="#a1a1aa" />
-    </StackPanel>
-
-    <Grid Grid.Row="5" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
+    <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
       <Button Content="Don't track this folder" Classes="secondary" Command="{Binding IgnoreFolderCommand}" />
       <Button Grid.Column="2" Content="Cancel" Classes="secondary" IsCancel="True"
               Command="{Binding CancelCommand}" />

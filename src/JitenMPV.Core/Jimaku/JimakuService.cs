@@ -40,6 +40,9 @@ public sealed partial class JimakuService : IDisposable
     private readonly HttpMessageHandler? _handler;
     private readonly string _cacheDir;
     private readonly SubtitleSyncService? _synchronization;
+    private readonly SubtitleReleasePreferences _releases;
+    private string? _expectedSubtitle;
+    private DateTimeOffset _trackChoicesAfter = DateTimeOffset.MaxValue;
     private readonly SemaphoreSlim _busy = new(1, 1);
 
     private volatile PluginSettings _settings;
@@ -79,6 +82,7 @@ public sealed partial class JimakuService : IDisposable
         _preferredShow = preferredShow;
         _synchronization = synchronization;
         _cacheDir = cacheDir ?? Path.Combine(AppPaths.CacheDir, "jimaku");
+        _releases = new(cacheDir is null ? SubtitleReleasePreferences.DefaultPath : Path.Combine(cacheDir, "subtitle-releases.json"));
         _client = new JimakuClient(settings.JimakuApiKey, logger, handler);
     }
 
@@ -96,6 +100,8 @@ public sealed partial class JimakuService : IDisposable
         var previous = Interlocked.Exchange(ref _fileCts, next);
         TaskHelper.CancelAndDispose(ref previous);
 
+        _expectedSubtitle = null;
+        _trackChoicesAfter = DateTimeOffset.UtcNow + FileSettleDelay;
         var settings = _settings;
         if (!settings.JimakuEnabled || !settings.JimakuAutoFetch) return;
 
@@ -203,6 +209,13 @@ public sealed partial class JimakuService : IDisposable
     private async Task AutoFetchAsync(CancellationToken ct)
     {
         var tracks = await ReadTracksAsync(ct, waitForTracks: true);
+        var releaseProps = await MediaIdentityReader.ReadPropertiesAsync(_ipc, _logger, ct);
+        var releaseIdentity = releaseProps is null ? null : MediaIdentityResolver.Resolve(releaseProps);
+        if (releaseProps?.Path is { } releasePath && _releases.Get(releaseIdentity) is not null)
+        {
+            await SearchAndLoadAsync(releasePath, releaseProps.Filename, releaseIdentity, null, false, ct);
+            return;
+        }
         var (state, track) = JapaneseTrackDetector.Find(tracks, IsJapaneseTrack);
         if (state == JapaneseTrackState.Selected)
         {
@@ -213,6 +226,7 @@ public sealed partial class JimakuService : IDisposable
         if (state == JapaneseTrackState.Available)
         {
             _logger.LogInformation("Selecting existing Japanese subtitle track {Id}", track!.Id);
+            _expectedSubtitle = "track:" + track.Id;
             await _ipc.SetPropertyAsync("sid", track.Id, ct);
             if (_synchronization is { Enabled: true }) await _synchronization.SyncCurrentAsync(ct);
             await NotifyAsync($"Selected Japanese subtitles: {track.Title ?? track.Lang}", false, ct);
@@ -260,6 +274,40 @@ public sealed partial class JimakuService : IDisposable
             _requestedUrl = null;
             _busy.Release();
         }
+    }
+
+    public void OnSubtitleChanged(CancellationToken lifetime)
+    {
+        if (!_settings.JimakuEnabled || _busy.CurrentCount == 0 || DateTimeOffset.UtcNow < _trackChoicesAfter) return;
+        var token = _fileCts?.Token ?? lifetime;
+        _ = TaskHelper.RunSafe(async () =>
+        {
+            await Task.Delay(150, token);
+            if (_busy.CurrentCount == 0) return;
+            var sid = await _ipc.GetPropertyAsync<int?>("sid", token);
+            var track = (await ReadTracksAsync(token, false)).FirstOrDefault(t => t.Id == sid);
+            if (track?.ExternalFilename is not { } file || !IsJapaneseTrack(track)
+                || _expectedSubtitle == "file:" + file || _expectedSubtitle == "track:" + sid) return;
+            var name = track.Title?.Replace("Jimaku: ", "") ?? "";
+            if (JimakuFileRanker.ReleaseGroupOf(name) is null)
+            {
+                if (_synchronization?.Original(file) != file && _synchronization is not null) return;
+                name = Path.GetFileName(file);
+            }
+            if (JimakuFileRanker.ReleaseGroupOf(name) is null) return;
+            await RememberReleaseAsync(name, token);
+            _expectedSubtitle = null;
+            CancelPendingSelection(lifetime);
+        }, _logger, "Remember subtitle release");
+    }
+
+    private async Task RememberReleaseAsync(string name, CancellationToken ct)
+    {
+        var group = JimakuFileRanker.ReleaseGroupOf(name.Replace("Jimaku: ", ""));
+        if (group is null) return;
+        var props = await MediaIdentityReader.ReadPropertiesAsync(_ipc, _logger, ct);
+        var identity = props is null ? null : MediaIdentityResolver.Resolve(props);
+        if (identity is not null) _releases.Set(identity, group);
     }
 
     private string? SelectionScope => _preferredShow?.Invoke() is { } choice
@@ -423,6 +471,7 @@ public sealed partial class JimakuService : IDisposable
         session.Candidates = session.Candidates.DistinctBy(c => c.TrackId is { } id ? $"track:{id}"
             : c.Url ?? c.LocalPath ?? c.Name).ToList();
         var preference = choice?.Preference ?? SubtitlePreference.Dialogue;
+        var preferredRelease = _releases.Get(identity);
         var scored = new List<(Candidate Candidate, int Score, int Index)>();
         for (var i = 0; i < session.Candidates.Count; i++)
         {
@@ -443,6 +492,8 @@ public sealed partial class JimakuService : IDisposable
             }
             var score = SubtitleContentRanker.Score(candidate.Name, content, mediaName, preference);
             if (candidate.TrackId is not null) score += 20;
+            if (preferredRelease is not null && string.Equals(preferredRelease,
+                    JimakuFileRanker.ReleaseGroupOf(candidate.Name.Replace("Jimaku: ", "")), StringComparison.OrdinalIgnoreCase)) score += 1000;
             scored.Add((candidate, score, i));
         }
         session.Candidates = [.. scored.OrderByDescending(x => x.Score).ThenBy(x => x.Index).Select(x => x.Candidate)];
@@ -453,7 +504,7 @@ public sealed partial class JimakuService : IDisposable
             : session.Candidates.FindIndex(c => c.TrackId == selectedTrack);
         var requestedIndex = _requestedUrl is null ? -1 : session.Candidates.FindIndex(c => c.Url == _requestedUrl || c.SourceUrl == _requestedUrl);
         var start = requestedIndex >= 0 ? requestedIndex
-            : query is null && selectedIndex >= 0 ? selectedIndex + 1 : 0;
+            : userInitiated && query is null && selectedIndex >= 0 ? selectedIndex + 1 : 0;
         if (await AdvanceAsync(session, start, 1, userInitiated, ct)) return;
         if (start > 0 && await AdvanceAsync(session, 0, 1, userInitiated, ct)) return;
         await NotifyAsync(choice is null ? "Jimaku: no usable subtitles found"
@@ -532,6 +583,7 @@ public sealed partial class JimakuService : IDisposable
                 if (await LoadCandidateAsync(session, i, userInitiated, ct))
                 {
                     if (session.Candidates[session.Index].TrackId is null) Remember(session);
+                    if (userInitiated) await RememberReleaseAsync(session.Candidates[session.Index].Name, ct);
                     return true;
                 }
             }
@@ -564,6 +616,7 @@ public sealed partial class JimakuService : IDisposable
         if (candidate.TrackId is { } trackId && string.IsNullOrEmpty(candidate.LocalPath))
         {
             if (_synchronization is not null) await _synchronization.RememberCurrentDelayAsync(ct);
+            _expectedSubtitle = "track:" + trackId;
             await _ipc.SetPropertyAsync("sid", trackId, ct);
             if (_synchronization is not null) await _synchronization.RestoreCurrentDelayAsync(ct);
             await NotifyAsync(Position(session, index), userInitiated, ct);
@@ -618,6 +671,7 @@ public sealed partial class JimakuService : IDisposable
     /// Re-selects a subtitle this file already has rather than adding it a second time.
     private async Task<bool> AddTrackAsync(string path, string name, CancellationToken ct)
     {
+        _expectedSubtitle = "file:" + path;
         var existing = (await ReadTracksAsync(ct, waitForTracks: false))
             .FirstOrDefault(t => t.ExternalFilename == path);
         if (existing is not null)

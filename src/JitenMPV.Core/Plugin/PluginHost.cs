@@ -791,6 +791,7 @@ public sealed class PluginHost(
             _reloadSubtitleSource = () => ReloadSubtitleSource(ipcClient, preParser, timeline, ct);
             ipcClient.PropertyChanged += (name, _) =>
             {
+                if (name == "sid") jimaku.OnSubtitleChanged(ct);
                 if (name is "sid" or "path")
                     ReloadSubtitleSource(ipcClient, preParser, timeline, ct);
                 if (name == "path")

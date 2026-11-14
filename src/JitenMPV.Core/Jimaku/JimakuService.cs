@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using JitenMPV.Core.Config;
+using JitenMPV.Core.Sync;
 using JitenMPV.Core.Api.Models;
 using JitenMPV.Core.Tracking;
 using JitenMPV.Core.Interaction;
@@ -38,6 +39,7 @@ public sealed partial class JimakuService : IDisposable
     private readonly ILogger _logger;
     private readonly HttpMessageHandler? _handler;
     private readonly string _cacheDir;
+    private readonly SubtitleSyncService? _synchronization;
     private readonly SemaphoreSlim _busy = new(1, 1);
 
     private volatile PluginSettings _settings;
@@ -67,7 +69,7 @@ public sealed partial class JimakuService : IDisposable
 
     public JimakuService(MpvIpcClient ipc, StatusOverlay status, PluginSettings settings, ILogger logger,
         HttpMessageHandler? handler = null, string? cacheDir = null,
-        Func<SubtitleShowChoice?>? preferredShow = null)
+        Func<SubtitleShowChoice?>? preferredShow = null, SubtitleSyncService? synchronization = null)
     {
         _ipc = ipc;
         _status = status;
@@ -75,6 +77,7 @@ public sealed partial class JimakuService : IDisposable
         _logger = logger;
         _handler = handler;
         _preferredShow = preferredShow;
+        _synchronization = synchronization;
         _cacheDir = cacheDir ?? Path.Combine(AppPaths.CacheDir, "jimaku");
         _client = new JimakuClient(settings.JimakuApiKey, logger, handler);
     }
@@ -130,6 +133,13 @@ public sealed partial class JimakuService : IDisposable
                 _logger.LogWarning("Unknown Jimaku action: {Action}", action);
                 break;
         }
+    }
+
+    public void CancelPendingSelection(CancellationToken lifetime)
+    {
+        var next = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
+        var previous = Interlocked.Exchange(ref _fileCts, next);
+        TaskHelper.CancelAndDispose(ref previous);
     }
 
     public void OnQuery(string query, CancellationToken lifetime)
@@ -194,12 +204,17 @@ public sealed partial class JimakuService : IDisposable
     {
         var tracks = await ReadTracksAsync(ct, waitForTracks: true);
         var (state, track) = JapaneseTrackDetector.Find(tracks, IsJapaneseTrack);
-        if (state == JapaneseTrackState.Selected) return;
+        if (state == JapaneseTrackState.Selected)
+        {
+            if (_synchronization is { Enabled: true }) await _synchronization.SyncCurrentAsync(ct);
+            return;
+        }
 
         if (state == JapaneseTrackState.Available)
         {
             _logger.LogInformation("Selecting existing Japanese subtitle track {Id}", track!.Id);
             await _ipc.SetPropertyAsync("sid", track.Id, ct);
+            if (_synchronization is { Enabled: true }) await _synchronization.SyncCurrentAsync(ct);
             await NotifyAsync($"Selected Japanese subtitles: {track.Title ?? track.Lang}", false, ct);
             return;
         }
@@ -546,9 +561,11 @@ public sealed partial class JimakuService : IDisposable
     private async Task<bool> LoadCandidateAsync(Session session, int index, bool userInitiated, CancellationToken ct)
     {
         var candidate = session.Candidates[index];
-        if (candidate.TrackId is { } trackId)
+        if (candidate.TrackId is { } trackId && string.IsNullOrEmpty(candidate.LocalPath))
         {
+            if (_synchronization is not null) await _synchronization.RememberCurrentDelayAsync(ct);
             await _ipc.SetPropertyAsync("sid", trackId, ct);
+            if (_synchronization is not null) await _synchronization.RestoreCurrentDelayAsync(ct);
             await NotifyAsync(Position(session, index), userInitiated, ct);
             return true;
         }
@@ -559,8 +576,18 @@ public sealed partial class JimakuService : IDisposable
             session.Candidates[index] = candidate;
         }
         if (!File.Exists(candidate.LocalPath)) return false;
-        if (!await AddTrackAsync(await PrepareAsync(candidate.LocalPath, ct), candidate.Name, ct)) return false;
-        await NotifyAsync(Position(session, index), userInitiated, ct);
+        var prepared = await PrepareAsync(candidate.LocalPath, ct);
+        if (_synchronization is not null && _synchronization.Enabled)
+        {
+            await NotifyAsync("Checking subtitle timing...", false, ct);
+            var synced = await _synchronization.PrepareAsync(prepared, ct);
+            prepared = synced.Path;
+        }
+        if (_synchronization is not null) await _synchronization.RememberCurrentDelayAsync(ct);
+        if (!await AddTrackAsync(prepared, candidate.Name, ct)) return false;
+        if (_synchronization is not null) await _synchronization.RestoreCurrentDelayAsync(ct);
+        await NotifyAsync(Position(session, index) + (_synchronization?.Enabled == true
+            ? $"\n{_synchronization.Status}" : ""), userInitiated, ct);
         return true;
     }
 
@@ -611,7 +638,8 @@ public sealed partial class JimakuService : IDisposable
     {
         var tracks = (await ReadTracksAsync(ct, waitForTracks: false))
             .Where(t => !JapaneseTrackDetector.IsBitmap(t) && IsJapaneseTrack(t)
-                        && t.ExternalFilename?.StartsWith(_cacheDir, StringComparison.Ordinal) != true)
+                        && t.ExternalFilename?.StartsWith(_cacheDir, StringComparison.Ordinal) != true
+                        && t.ExternalFilename?.StartsWith(SubtitleSyncService.CacheDirectory, StringComparison.Ordinal) != true)
             .ToList();
         return ([.. tracks.Select(t => new Candidate(t.Title ?? t.Lang ?? $"track {t.Id}", null, t.ExternalFilename, t.Id))],
             tracks.FindIndex(t => t.Selected));

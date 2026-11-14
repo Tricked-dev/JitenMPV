@@ -80,7 +80,7 @@ public sealed class PreParseService(
         if (string.IsNullOrEmpty(videoPath))
             return null;
 
-        if (!Path.IsPathRooted(videoPath))
+        if (!Path.IsPathRooted(videoPath) && !Uri.TryCreate(videoPath, UriKind.Absolute, out _))
         {
             var workDir = await ipc.GetPropertyAsync<string>("working-directory", ct);
             if (!string.IsNullOrEmpty(workDir))

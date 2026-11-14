@@ -1460,6 +1460,9 @@
               </StackPanel>
 
               <StackPanel Spacing="8">
+                <CheckBox Content="Automatically synchronize subtitles" IsChecked="{Binding SubtitleAutoSync}" />
+                <TextBlock Text="Verify dialogue timing separately for each episode. Uncertain matches keep their original timing."
+                           FontSize="11" Foreground="#71717a" TextWrapping="Wrap" />
                 <CheckBox Content="Fetch automatically" IsChecked="{Binding JimakuAutoFetch}" />
                 <TextBlock Text="Load subtitles when a file opens without Japanese ones."
                            FontSize="11" Foreground="#71717a" TextWrapping="Wrap" />

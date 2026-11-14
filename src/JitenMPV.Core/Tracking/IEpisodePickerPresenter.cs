@@ -15,7 +15,10 @@ public sealed record EpisodePickerData(
     IReadOnlyList<DeckCandidate> Candidates,
     Func<string, CancellationToken, Task<IReadOnlyList<DeckCandidate>>> Search,
     SubtitlePreference SubtitlePreference = SubtitlePreference.Dialogue,
-    Func<MediaDeck, int?, CancellationToken, Task<IReadOnlyList<SubtitleSuggestion>>>? FindSubtitles = null);
+    Func<MediaDeck, int?, CancellationToken, Task<IReadOnlyList<SubtitleSuggestion>>>? FindSubtitles = null,
+    Func<CancellationToken, Task<string>>? SyncSubtitles = null,
+    Func<CancellationToken, Task<string>>? UndoSubtitleSync = null,
+    string? SyncStatus = null);
 
 /// <param name="Episode">The deck's episode this file is; null keeps the detected number.</param>
 public sealed record EpisodePickerResult(MediaDeck? Deck, int? Episode, bool IgnoreFolder,

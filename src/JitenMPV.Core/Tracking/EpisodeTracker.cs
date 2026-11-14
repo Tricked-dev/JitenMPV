@@ -59,6 +59,9 @@ public sealed class EpisodeTracker(
     }
 
     public Func<MediaDeck, int?, CancellationToken, Task<IReadOnlyList<SubtitleSuggestion>>>? FindSubtitles { get; set; }
+    public Func<CancellationToken, Task<string>>? SyncSubtitles { get; set; }
+    public Func<CancellationToken, Task<string>>? UndoSubtitleSync { get; set; }
+    public Func<string>? SubtitleSyncStatus { get; set; }
     public string? SelectedSubtitleUrl { get; private set; }
 
     public bool IsTracking => _identity is not null;
@@ -303,7 +306,7 @@ public sealed class EpisodeTracker(
             candidates,
             resolver.SearchAsync,
             SubtitleChoice?.Preference ?? SubtitlePreference.Dialogue,
-            FindSubtitles);
+            FindSubtitles, SyncSubtitles, UndoSubtitleSync, SubtitleSyncStatus?.Invoke());
 
         if (await picker.ShowAsync(data, _fileCts?.Token ?? ct) is not { } result || _identity != identity) return;
 

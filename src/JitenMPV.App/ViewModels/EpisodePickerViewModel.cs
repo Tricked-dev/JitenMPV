@@ -72,6 +72,7 @@ public partial class EpisodePickerViewModel : ViewModelBase
     {
         _data = data;
         FileTitle = data.FileTitle;
+        SyncStatus = data.SyncStatus ?? "";
         Episode = data.Episode;
         SubtitlePreferenceIndex = (int)data.SubtitlePreference;
         SearchText = data.FileTitle;
@@ -93,6 +94,31 @@ public partial class EpisodePickerViewModel : ViewModelBase
     [ObservableProperty] private decimal? _episode;
     [ObservableProperty] private string _status = "";
     [ObservableProperty] private int _subtitlePreferenceIndex;
+    [ObservableProperty] private string _syncStatus = "";
+    [ObservableProperty] private bool _syncBusy;
+
+    [RelayCommand]
+    private async Task SyncSubtitlesAsync()
+    {
+        if (_data.SyncSubtitles is null || SyncBusy) return;
+        SyncBusy = true;
+        SyncStatus = "Checking dialogue timing...";
+        try { SyncStatus = await _data.SyncSubtitles(CancellationToken.None); }
+        catch (OperationCanceledException) { SyncStatus = "Synchronization cancelled"; }
+        catch (IOException) { SyncStatus = "Could not read subtitle timing"; }
+        finally { SyncBusy = false; }
+    }
+
+    [RelayCommand]
+    private async Task UndoSyncAsync()
+    {
+        if (_data.UndoSubtitleSync is null || SyncBusy) return;
+        SyncBusy = true;
+        try { SyncStatus = await _data.UndoSubtitleSync(CancellationToken.None); }
+        catch (OperationCanceledException) { SyncStatus = "Episode changed; timing unchanged"; }
+        catch (IOException) { SyncStatus = "Could not restore subtitle timing"; }
+        finally { SyncBusy = false; }
+    }
     [ObservableProperty] private SubtitleSuggestion? _selectedSubtitle;
     [ObservableProperty] private string _subtitleStatus = "Select a show to see its subtitles.";
     public ObservableCollection<SubtitleSuggestion> Subtitles { get; } = [];

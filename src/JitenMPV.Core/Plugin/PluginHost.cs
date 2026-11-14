@@ -13,6 +13,7 @@ using JitenMPV.Core.Plus;
 using JitenMPV.Core.Rendering;
 using JitenMPV.Core.Pitch;
 using JitenMPV.Core.Subtitles;
+using JitenMPV.Core.Sync;
 using JitenMPV.Core.Theming;
 using JitenMPV.Core.Tracking;
 using JitenMPV.Core.Update;
@@ -73,6 +74,7 @@ public sealed class PluginHost(
     private volatile MediaCaptureCoordinator? _mediaCapture;
     private volatile EpisodeTracker? _episodeTracker;
     private volatile JimakuService? _jimaku;
+    private volatile SubtitleSyncService? _subtitleSync;
     private volatile bool _wasPausedBeforeSettings;
     private volatile bool _playbackPauseActive;
     private Task _pausePlaybackTask = Task.CompletedTask;
@@ -182,6 +184,7 @@ public sealed class PluginHost(
         _mediaCapture?.UpdateSettings(newSettings);
         _episodeTracker?.UpdateSettings(newSettings);
         _jimaku?.UpdateSettings(newSettings);
+        _subtitleSync?.UpdateSettings(newSettings);
         _preParser?.UpdateSettings(newSettings);
 
         bool rendererSwitched =
@@ -650,10 +653,15 @@ public sealed class PluginHost(
             ipcClient.FileEnded += reason => episodeTracker.OnEndFile(reason == "eof");
             var scriptApi = new ScriptApi(ipcClient, apiClient, episodeTracker, statusOverlay, logger);
             scriptApi.Attach(ct);
+            using var subtitleSync = new SubtitleSyncService(ipcClient, settings, logger);
+            _subtitleSync = subtitleSync;
             using var jimaku = new JimakuService(ipcClient, statusOverlay, settings, logger,
-                preferredShow: () => episodeTracker.SubtitleChoice);
+                preferredShow: () => episodeTracker.SubtitleChoice, synchronization: subtitleSync);
             _jimaku = jimaku;
             episodeTracker.FindSubtitles = jimaku.FindSubtitlesAsync;
+            episodeTracker.SyncSubtitles = subtitleSync.SyncCurrentAsync;
+            episodeTracker.UndoSubtitleSync = subtitleSync.UndoCurrentAsync;
+            episodeTracker.SubtitleSyncStatus = () => subtitleSync.Status;
 
             popupManager.VisibilityChanged += visible =>
             {
@@ -786,7 +794,14 @@ public sealed class PluginHost(
                 if (name is "sid" or "path")
                     ReloadSubtitleSource(ipcClient, preParser, timeline, ct);
                 if (name == "path")
+                {
+                    subtitleSync.OnFileChanged(ct);
                     jimaku.OnFileChanged(ct);
+                }
+                if (name == "aid")
+                {
+                    subtitleSync.OnFileChanged(ct);
+                }
             };
 
             ipcClient.ScriptMessageReceived += (name, args) =>
@@ -865,6 +880,7 @@ public sealed class PluginHost(
             }
 
             await ipcClient.ObservePropertyAsync("sid", 4, ct);
+            await ipcClient.ObservePropertyAsync("aid", 901, ct);
             await ipcClient.ObservePropertyAsync("path", 5, ct);
 
             var widthTask = ipcClient.GetPropertyAsync<int>("osd-width", ct);
@@ -1133,6 +1149,8 @@ public sealed class PluginHost(
         await _trackToggleLock.WaitAsync(ct);
         try
         {
+            _jimaku?.CancelPendingSelection(ct);
+            if (_subtitleSync is not null) await _subtitleSync.RememberCurrentDelayAsync(ct);
             var tracks = await ipc.GetPropertyRawAsync("track-list", ct);
             var path = await ipc.GetPropertyAsync<string?>("path", ct);
             var languages = await _trackLanguageProbe.InspectAsync(ipc, tracks, path, ct);

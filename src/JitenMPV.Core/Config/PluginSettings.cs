@@ -422,6 +422,9 @@ public sealed class PluginSettings
     [JsonPropertyName("plugin_start_key")]
     public string PluginStartKey { get; set; } = "F10";
 
+    [JsonPropertyName("subtitle_auto_sync")]
+    public bool SubtitleAutoSync { get; set; } = true;
+
     [JsonPropertyName("jimaku_enabled")]
     public bool JimakuEnabled { get; set; } = true;
 

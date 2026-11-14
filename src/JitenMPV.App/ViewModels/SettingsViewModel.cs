@@ -976,6 +976,7 @@ public partial class SettingsViewModel : ViewModelBase
                 : null,
             CustomThemeBase = SelectedTheme == "Custom" ? CustomThemeBase : null,
             PopupKeybinds = BuildKeybindsDictionary(),
+            SubtitleAutoSync = SubtitleAutoSync,
             JimakuEnabled = JimakuEnabled,
             JimakuAutoFetch = JimakuAutoFetch,
             JimakuApiKey = string.IsNullOrWhiteSpace(JimakuApiKey) ? null : JimakuApiKey.Trim(),
@@ -1463,6 +1464,7 @@ public partial class SettingsViewModel : ViewModelBase
             : "Theme imported";
     }
 
+    [ObservableProperty] private bool _subtitleAutoSync;
     [ObservableProperty] private bool _jimakuEnabled;
     [ObservableProperty] private bool _jimakuAutoFetch;
     [ObservableProperty] private string _jimakuApiKey = "";
@@ -1490,6 +1492,7 @@ public partial class SettingsViewModel : ViewModelBase
 
     private void ApplyJimakuSettings(PluginSettings s)
     {
+        SubtitleAutoSync = s.SubtitleAutoSync;
         JimakuEnabled = s.JimakuEnabled;
         JimakuAutoFetch = s.JimakuAutoFetch;
         JimakuApiKey = s.JimakuApiKey ?? "";

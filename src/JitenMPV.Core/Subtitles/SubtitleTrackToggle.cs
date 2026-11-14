@@ -45,7 +45,8 @@ public sealed class SubtitleTrackToggle
 
     /// Signs/songs and forced tracks only cover what an English dub leaves untranslated, so they
     /// are never picked as the dialogue track.
-    public static int? PickEnglish(JsonElement? trackList)
+    public static int? PickEnglish(JsonElement? trackList,
+        IReadOnlyDictionary<int, SubtitleLanguage>? languages = null)
     {
         int? best = null;
         int bestScore = int.MinValue;
@@ -53,8 +54,11 @@ public sealed class SubtitleTrackToggle
         {
             var lang = Text(track, "lang");
             var title = Text(track, "title");
-            if (!IsLanguage(lang, "en", "eng") && !(lang.Length == 0 && title.Contains("english")))
-                continue;
+            var language = track.TryGetProperty("id", out var trackId)
+                ? languages?.GetValueOrDefault(trackId.GetInt32()) ?? SubtitleLanguage.Unknown : SubtitleLanguage.Unknown;
+            if (language == SubtitleLanguage.Japanese) continue;
+            if (language != SubtitleLanguage.English && !IsLanguage(lang, "en", "eng")
+                && !(lang.Length == 0 && title.Contains("english"))) continue;
 
             bool dialogue = title.Contains("full") || title.Contains("dialog");
             if (Flag(track, "forced")
@@ -76,12 +80,17 @@ public sealed class SubtitleTrackToggle
         return best;
     }
 
-    public static int? PickJapanese(JsonElement? trackList)
+    public static int? PickJapanese(JsonElement? trackList,
+        IReadOnlyDictionary<int, SubtitleLanguage>? languages = null)
     {
         foreach (var track in SubTracks(trackList))
-            if (IsLanguage(Text(track, "lang"), "ja", "jpn") && !Flag(track, "forced")
-                && track.TryGetProperty("id", out var id))
-                return id.GetInt32();
+        {
+            if (!track.TryGetProperty("id", out var id)) continue;
+            var language = languages?.GetValueOrDefault(id.GetInt32()) ?? SubtitleLanguage.Unknown;
+            if (language == SubtitleLanguage.English) continue;
+            if ((language == SubtitleLanguage.Japanese || IsLanguage(Text(track, "lang"), "ja", "jpn"))
+                && !Flag(track, "forced")) return id.GetInt32();
+        }
         return null;
     }
 

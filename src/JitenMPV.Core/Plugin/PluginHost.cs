@@ -79,6 +79,7 @@ public sealed class PluginHost(
     private volatile bool _subtitlesVisible = true;
     private readonly SemaphoreSlim _subtitleVisibilityLock = new(1, 1);
     private readonly SubtitleTrackToggle _trackToggle = new();
+    private readonly SubtitleTrackLanguageProbe _trackLanguageProbe = new();
     private readonly SemaphoreSlim _trackToggleLock = new(1, 1);
 
     private volatile bool _shuttingDown;
@@ -1133,19 +1134,21 @@ public sealed class PluginHost(
         try
         {
             var tracks = await ipc.GetPropertyRawAsync("track-list", ct);
-            if (SubtitleTrackToggle.PickEnglish(tracks) is not { } english)
+            var path = await ipc.GetPropertyAsync<string?>("path", ct);
+            var languages = await _trackLanguageProbe.InspectAsync(ipc, tracks, path, ct);
+            if (await ipc.GetPropertyAsync<string?>("path", ct) != path) return;
+            if (SubtitleTrackToggle.PickEnglish(tracks, languages) is not { } english)
             {
                 await statusOverlay.ShowAsync(ipc, "No English subtitle track", 2000, ct);
                 return;
             }
 
-            var path = await ipc.GetPropertyAsync<string?>("path", ct);
             // mpv reports no track as false rather than as a number.
             var sid = await ipc.GetPropertyRawAsync("sid", ct) is { ValueKind: JsonValueKind.Number } sidValue
                 ? sidValue.GetInt32()
                 : (int?)null;
             var delay = await ipc.GetPropertyAsync<double?>("sub-delay", ct) ?? 0;
-            if (_trackToggle.Next(path, sid, delay, english, SubtitleTrackToggle.PickJapanese(tracks))
+            if (_trackToggle.Next(path, sid, delay, english, SubtitleTrackToggle.PickJapanese(tracks, languages))
                 is not { } next)
             {
                 await statusOverlay.ShowAsync(ipc, "No Japanese subtitle track", 2000, ct);

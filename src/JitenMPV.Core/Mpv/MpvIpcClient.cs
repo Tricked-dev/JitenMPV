@@ -154,6 +154,13 @@ public sealed class MpvIpcClient(string pipePath, ILogger logger) : IAsyncDispos
     public async Task<string?> SubAddAsync(string path, string flags, string title, string lang, CancellationToken ct)
         => (await SendCommandWithReplyAsync(["sub-add", path, flags, title, lang], ct)).Error;
 
+    public Task DumpCacheAsync(double start, double end, string filename, CancellationToken ct)
+        => SendRawAsync(new JsonObject
+        {
+            ["command"] = JsonSerializer.SerializeToNode(new object[] { "dump-cache", start, end, filename }),
+            ["async"] = true
+        }, "dump-cache", ct);
+
     public Task SeekAbsoluteAsync(double seconds, CancellationToken ct)
         => SendCommandAsync(["seek", seconds, "absolute+exact"], ct);
 

@@ -156,7 +156,8 @@ If ffmpeg is missing, the same screen offers a one-click download. Without it, s
 
 - `Ctrl+J` opens settings
 - `F10` toggles JitenMPV on or off, or restarts it if it stopped. Switching it off restores mpv's subtitles and keeps it off across files until you switch it on again.
-- mpv's subtitle visibility key (`v` by default) hides or shows JitenMPV's coloured subtitles
+- `Alt+x` shows or hides plain English subtitles at the top while keeping highlighted Japanese subtitles below. Both tracks need to be available in mpv.
+- mpv's subtitle visibility key (`v` by default) hides or shows both subtitle tracks
 - Hover a word for its dictionary entry, click to interact
 - `Ctrl+E` picks the Jiten show and episode for the current file
 

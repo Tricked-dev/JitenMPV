@@ -2,47 +2,9 @@ using System.Text.Json;
 
 namespace JitenMPV.Core.Subtitles;
 
-public readonly record struct SubtitleTrackSwitch(int Sid, double? Delay);
-
-/// Flips the main subtitle track between English and the track it was switched from. mpv has one
-/// sub-delay for all tracks, so each track's delay is remembered here and restored with it.
-public sealed class SubtitleTrackToggle
+/// Selects dialogue tracks for the bilingual subtitle toggle.
+public static class SubtitleTrackToggle
 {
-    private string? _path;
-    private int? _returnSid;
-    private readonly Dictionary<int, double> _delays = [];
-
-    /// Null when English is already selected and there is nothing to switch back to.
-    public SubtitleTrackSwitch? Next(string? path, int? selected, double delay, int english, int? japanese)
-    {
-        if (path != _path)
-        {
-            _path = path;
-            _returnSid = null;
-            _delays.Clear();
-        }
-
-        if (selected is { } current)
-            _delays[current] = delay;
-
-        int? target;
-        if (selected == english)
-        {
-            target = _returnSid ?? japanese;
-        }
-        else
-        {
-            _returnSid = selected;
-            target = english;
-        }
-
-        if (target is not { } sid) return null;
-
-        // A user who never touches sub-delay keeps whatever mpv.conf set it to.
-        double? next = _delays.Values.Any(d => d != 0) ? _delays.GetValueOrDefault(sid) : null;
-        return new SubtitleTrackSwitch(sid, next);
-    }
-
     /// Signs/songs and forced tracks only cover what an English dub leaves untranslated, so they
     /// are never picked as the dialogue track.
     public static int? PickEnglish(JsonElement? trackList,

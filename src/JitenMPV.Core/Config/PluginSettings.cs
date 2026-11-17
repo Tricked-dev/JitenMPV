@@ -286,7 +286,7 @@ public sealed class PluginSettings
     [JsonPropertyName("keybind_loop_sub")]
     public string KeybindLoopSub { get; set; } = "Ctrl+l";
 
-    /// Switches the main subtitle track to English and back.
+    /// Shows or hides plain English subtitles above the Japanese subtitles.
     [JsonPropertyName("keybind_english_toggle")]
     public string KeybindEnglishToggle { get; set; } = "Alt+x";
 

@@ -80,7 +80,9 @@ public sealed class PluginHost(
     private Task _pausePlaybackTask = Task.CompletedTask;
     private volatile bool _subtitlesVisible = true;
     private readonly SemaphoreSlim _subtitleVisibilityLock = new(1, 1);
-    private readonly SubtitleTrackToggle _trackToggle = new();
+    private sealed record EnglishSubtitleState(string? Path, int EnglishSid,
+        JsonElement? PreviousSid, bool PreviousVisibility, int PreviousPosition);
+    private EnglishSubtitleState? _englishSubtitles;
     private readonly SubtitleTrackLanguageProbe _trackLanguageProbe = new();
     private readonly SemaphoreSlim _trackToggleLock = new(1, 1);
 
@@ -649,7 +651,11 @@ public sealed class PluginHost(
                     : statusOverlay.LogAsync(ipcClient, message, token),
                 episodePickerPresenter);
             _episodeTracker = episodeTracker;
-            ipcClient.FileLoaded += () => _ = RunSafe(() => LoadEpisodeAsync(ipcClient, episodeTracker, ct));
+            ipcClient.FileLoaded += () => _ = RunSafe(async () =>
+            {
+                await RestoreEnglishSubtitlesAsync(ipcClient, ct);
+                await LoadEpisodeAsync(ipcClient, episodeTracker, ct);
+            });
             ipcClient.FileEnded += reason => episodeTracker.OnEndFile(reason == "eof");
             var scriptApi = new ScriptApi(ipcClient, apiClient, episodeTracker, statusOverlay, logger);
             scriptApi.Attach(ct);
@@ -965,6 +971,7 @@ public sealed class PluginHost(
             {
                 using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 var cct = cleanupCts.Token;
+                await RestoreEnglishSubtitlesAsync(ipcClient, cct);
                 await ipcClient.RemoveOverlayAsync(SubtitleOverlayId, cct);
                 await ipcClient.RemoveOverlayAsync(UnderlineOverlayId, cct);
                 await ipcClient.RemoveOverlayAsync(HitboxDebugOverlayId, cct);
@@ -1150,8 +1157,13 @@ public sealed class PluginHost(
         await _trackToggleLock.WaitAsync(ct);
         try
         {
-            _jimaku?.CancelPendingSelection(ct);
-            if (_subtitleSync is not null) await _subtitleSync.RememberCurrentDelayAsync(ct);
+            if (_englishSubtitles is not null)
+            {
+                await RestoreEnglishSubtitlesCoreAsync(ipc, ct);
+                await statusOverlay.LogAsync(ipc, "English subtitles hidden", ct);
+                return;
+            }
+
             var tracks = await ipc.GetPropertyRawAsync("track-list", ct);
             var path = await ipc.GetPropertyAsync<string?>("path", ct);
             var languages = await _trackLanguageProbe.InspectAsync(ipc, tracks, path, ct);
@@ -1162,29 +1174,57 @@ public sealed class PluginHost(
                 return;
             }
 
-            // mpv reports no track as false rather than as a number.
-            var sid = await ipc.GetPropertyRawAsync("sid", ct) is { ValueKind: JsonValueKind.Number } sidValue
-                ? sidValue.GetInt32()
-                : (int?)null;
-            var delay = await ipc.GetPropertyAsync<double?>("sub-delay", ct) ?? 0;
-            if (_trackToggle.Next(path, sid, delay, english, SubtitleTrackToggle.PickJapanese(tracks, languages))
-                is not { } next)
+            var sid = await ipc.GetPropertyRawAsync("sid", ct);
+            if (sid is not { ValueKind: JsonValueKind.Number } selected || selected.GetInt32() == english)
             {
-                await statusOverlay.ShowAsync(ipc, "No Japanese subtitle track", 2000, ct);
-                return;
+                if (SubtitleTrackToggle.PickJapanese(tracks, languages) is not { } japanese)
+                {
+                    await statusOverlay.ShowAsync(ipc, "No Japanese subtitle track", 2000, ct);
+                    return;
+                }
+                _jimaku?.CancelPendingSelection(ct);
+                if (_subtitleSync is not null) await _subtitleSync.RememberCurrentDelayAsync(ct);
+                await ipc.SetPropertyAsync("sid", japanese, ct);
+                if (_subtitleSync is not null) await _subtitleSync.RestoreCurrentDelayAsync(ct);
             }
 
-            await ipc.SetPropertyAsync("sid", next.Sid, ct);
-            if (next.Delay is { } subDelay)
-                await ipc.SetPropertyAsync("sub-delay", subDelay, ct);
-
-            await statusOverlay.LogAsync(ipc,
-                next.Sid == english ? "Subtitles: English" : $"Subtitles: track {next.Sid}", ct);
+            _englishSubtitles = new EnglishSubtitleState(path, english,
+                await ipc.GetPropertyRawAsync("secondary-sid", ct),
+                await ipc.GetPropertyAsync<bool>("secondary-sub-visibility", ct),
+                await ipc.GetPropertyAsync<int>("secondary-sub-pos", ct));
+            // Secondary subtitles are rendered by mpv, outside Jiten's vocabulary pipeline.
+            // Position zero places them at the top, above the Japanese overlay.
+            await ipc.SetPropertyAsync("secondary-sub-pos", 0, ct);
+            await ipc.SetPropertyAsync("secondary-sid", english, ct);
+            await ipc.SetPropertyAsync("secondary-sub-visibility", _subtitlesVisible, ct);
+            await statusOverlay.LogAsync(ipc, "Subtitles: Japanese + English", ct);
         }
         finally
         {
             _trackToggleLock.Release();
         }
+    }
+
+    private async Task RestoreEnglishSubtitlesAsync(MpvIpcClient ipc, CancellationToken ct)
+    {
+        await _trackToggleLock.WaitAsync(ct);
+        try { await RestoreEnglishSubtitlesCoreAsync(ipc, ct); }
+        finally { _trackToggleLock.Release(); }
+    }
+
+    private async Task RestoreEnglishSubtitlesCoreAsync(MpvIpcClient ipc, CancellationToken ct)
+    {
+        if (_englishSubtitles is not { } previous) return;
+        var path = await ipc.GetPropertyAsync<string?>("path", ct);
+        var sid = await ipc.GetPropertyRawAsync("secondary-sid", ct);
+        // Do not replace a secondary track the user selected independently, or reuse file-local IDs.
+        if (path == previous.Path && sid is { ValueKind: JsonValueKind.Number } active
+            && active.GetInt32() == previous.EnglishSid)
+            await ipc.SetPropertyAsync("secondary-sid",
+                previous.PreviousSid is { ValueKind: JsonValueKind.Number } old ? old.GetInt32() : "no", ct);
+        await ipc.SetPropertyAsync("secondary-sub-pos", previous.PreviousPosition, ct);
+        await ipc.SetPropertyAsync("secondary-sub-visibility", previous.PreviousVisibility, ct);
+        _englishSubtitles = null;
     }
 
     private async Task ToggleSubtitlesAsync(MpvIpcClient ipc, CancellationToken ct)
@@ -1194,6 +1234,8 @@ public sealed class PluginHost(
         {
             var visible = !_subtitlesVisible;
             _subtitlesVisible = visible;
+            if (_englishSubtitles is not null)
+                await ipc.SetPropertyAsync("secondary-sub-visibility", visible, ct);
 
             await ipc.SetPropertyAsync("sub-visibility", "no", ct);
 

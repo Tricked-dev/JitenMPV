@@ -81,7 +81,7 @@ public sealed class PluginHost(
     private volatile bool _subtitlesVisible = true;
     private readonly SemaphoreSlim _subtitleVisibilityLock = new(1, 1);
     private sealed record EnglishSubtitleState(string? Path, int EnglishSid,
-        JsonElement? PreviousSid, bool PreviousVisibility, int PreviousPosition);
+        JsonElement? PreviousSid, bool PreviousVisibility, double PreviousPosition);
     private EnglishSubtitleState? _englishSubtitles;
     private readonly SubtitleTrackLanguageProbe _trackLanguageProbe = new();
     private readonly SemaphoreSlim _trackToggleLock = new(1, 1);
@@ -1191,7 +1191,7 @@ public sealed class PluginHost(
             _englishSubtitles = new EnglishSubtitleState(path, english,
                 await ipc.GetPropertyRawAsync("secondary-sid", ct),
                 await ipc.GetPropertyAsync<bool>("secondary-sub-visibility", ct),
-                await ipc.GetPropertyAsync<int>("secondary-sub-pos", ct));
+                await ipc.GetPropertyAsync<double>("secondary-sub-pos", ct));
             // Secondary subtitles are rendered by mpv, outside Jiten's vocabulary pipeline.
             // Position zero places them at the top, above the Japanese overlay.
             await ipc.SetPropertyAsync("secondary-sub-pos", 0, ct);
